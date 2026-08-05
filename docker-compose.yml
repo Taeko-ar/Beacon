@@ -1,0 +1,24 @@
+services:
+  nyaa-service:
+    build:
+      context: ./services/nyaa-service
+      dockerfile: Dockerfile
+    container_name: nyaa-service
+    ports:
+      - "58889:58889"
+    environment:
+      - PORT=58889
+    volumes:
+      - ./data/nyaa-service:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: anime-frontend
+    ports:
+      - "58888:80"
+    depends_on:
+      - nyaa-service
+    restart: unless-stopped

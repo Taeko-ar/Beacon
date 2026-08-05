@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build & output directories
+dist/
+**/dist/
+target/
+**/target/
+
+# Testing & coverage
+coverage/
+**/coverage/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+blob-report/
+*.timestamp-*.mjs
+**/*.timestamp-*.mjs
+frontend/coverage.json
+.tmp
+frontend/.tmp
+
+# Vite & tool caches
+.vite/
+**/.vite/
+
+# Logs & temporary files
+null
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment & local secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# SQLite databases & local data
+*.db
+*.db-shm
+*.db-wal
+anime.db*
+data/
+media/
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI / Agent custom config
+.agents
+.github/agents
+frontend/*.md
+backend/*.md

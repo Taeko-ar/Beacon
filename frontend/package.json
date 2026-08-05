@@ -1,0 +1,36 @@
+{
+  "name": "beacon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:frontend": "vitest run --coverage || (echo '[FAIL] Backend coverage below threshold' && exit 1)",
+    "test:backend": "cd .. && cd services/nyaa-service && cargo fmt --check && cargo clippy -- -D warnings && cargo llvm-cov -q --fail-under-lines 99 --fail-under-functions 99 --fail-under-regions 99 || (echo '[FAIL] Backend coverage below threshold' && exit 1)",
+    "test:e2e": "playwright test --reporter=line || (echo '[FAIL] Playwright tests failed' && exit 1)",
+    "lint:fix": "biome check --write . || (echo '[FAIL] Biome lint failed' && exit 1)",
+    "typecheck": "tsc --noEmit || (echo '[FAIL] Typecheck failed' && exit 1)",
+    "knip": "knip --fix  --allow-remove-files || (echo '[FAIL] knip failed' && exit 1)",
+    "check": "node ../scripts/check.mjs"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@playwright/test": "^1.49.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@types/node": "^22.0.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "jsdom": "^25.0.0",
+    "knip": "^6.29.0",
+    "solid-testing-library": "^0.5.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.11.0",
+    "vitest": "^2.1.0"
+  }
+}
