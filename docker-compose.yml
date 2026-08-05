@@ -18,7 +18,7 @@ services:
       dockerfile: Dockerfile
     container_name: anime-frontend
     ports:
-      - "58888:80"
+      - "58888:443"
     depends_on:
       - nyaa-service
     restart: unless-stopped

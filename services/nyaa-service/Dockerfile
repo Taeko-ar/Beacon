@@ -8,5 +8,5 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/nyaa-service /app/nyaa-service
-EXPOSE 8000
+EXPOSE 58889
 CMD ["/app/nyaa-service"]
