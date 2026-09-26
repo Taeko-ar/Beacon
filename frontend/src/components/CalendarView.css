@@ -246,12 +246,15 @@
 .calendar-events-col {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  /* Room for corner release tags, which sit 7px above each chip's edge. */
+  gap: 0.55rem;
+  padding-top: 7px;
   flex: 1;
   overflow: auto;
 }
 
 .calendar-event-chip {
+  position: relative;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 4px;
@@ -567,6 +570,26 @@
 .release-badge.final {
   background: rgba(244, 63, 94, 0.2);
   color: var(--error);
+}
+
+/* On calendar chips the tag straddles the top-right edge, so it takes no
+   width from the title. */
+.calendar-event-chip > .release-badge {
+  position: absolute;
+  top: -7px;
+  right: 6px;
+  margin: 0;
+  font-size: 0.55rem;
+  line-height: 1.25;
+  color: var(--bg);
+}
+
+.calendar-event-chip > .release-badge.new {
+  background: var(--success);
+}
+
+.calendar-event-chip > .release-badge.final {
+  background: var(--error);
 }
 
 /* ── Show detail modal (two-column) ───────────────────────────── */
