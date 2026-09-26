@@ -128,6 +128,13 @@ pub async fn calendar_handler(
     }
 }
 
+pub async fn calendar_status_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": true,
+        "data": calendar::fetch_status()
+    }))
+}
+
 pub async fn clear_calendar_cache_handler(
     State(tracker): State<tracker::TrackerStore>,
 ) -> Json<serde_json::Value> {
@@ -158,6 +165,7 @@ pub fn app(tracker: tracker::TrackerStore) -> Router {
         .route("/api/catalog/search", get(catalog_search_handler))
         .route("/api/nyaa/check", get(nyaa_check_handler))
         .route("/api/calendar", get(calendar_handler))
+        .route("/api/calendar/status", get(calendar_status_handler))
         .route("/api/calendar/cache", delete(clear_calendar_cache_handler))
         .route(
             "/api/track",
@@ -222,10 +230,34 @@ pub async fn run_server(
     true
 }
 
+// Week view can straddle a month boundary (e.g. a Wednesday-in-September
+// week starting in late August), which would otherwise hit an uncached
+// month and pay AniList's ~2.1s/request throttle live in the UI. Warm the
+// surrounding months once at boot so that's already cached by then.
+#[allow(unexpected_cfgs)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn warm_calendar_cache(tracker: tracker::TrackerStore) {
+    let service = calendar::CalendarService::new(tracker.db().clone());
+    let tracked_titles = tracker.list().into_iter().map(|t| t.title).collect();
+    service.set_tracked_titles(tracked_titles);
+
+    let now = chrono::Utc::now();
+    // Current month first: the UI opens on it.
+    for offset in [0i32, -1, 1] {
+        let total = now.year() * 12 + now.month() as i32 - 1 + offset;
+        let year = total.div_euclid(12);
+        let month = (total.rem_euclid(12) + 1) as u32;
+        if let Err(e) = service.get_events(year, month).await {
+            eprintln!("[Beacon] calendar cache warm {year}-{month} failed: {e}");
+        }
+    }
+}
+
 pub async fn main_entry(shutdown: tokio::sync::oneshot::Receiver<()>) {
     println!("[Beacon] Backend service starting...");
     let tracker = tracker::TrackerStore::new();
     tokio::spawn(run_polling_loop(tracker.clone()));
+    tokio::spawn(warm_calendar_cache(tracker.clone()));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 58889));
     run_server(addr, tracker, shutdown).await;
@@ -373,6 +405,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         let add_res = add_tracked_handler(State(tracker.clone()), Json(show.clone())).await;
         assert_eq!(add_res.0.id, "show1");
@@ -429,6 +462,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         tracker.add(show);
 
@@ -464,6 +498,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_calendar_status_handler() {
+        let res = calendar_status_handler().await;
+        assert_eq!(res.0["ok"], true);
+        assert!(res.0["data"]["active"].is_boolean());
+        assert!(res.0["data"]["queued"].is_u64());
+    }
+
+    #[tokio::test]
     #[serial]
     async fn test_calendar_handler() {
         let store = tracker::TrackerStore::with_file_path(None);
@@ -473,6 +515,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         });
 
         let mock_anilist_err = wiremock::MockServer::start().await;
@@ -481,7 +524,34 @@ mod tests {
             .mount(&mock_anilist_err)
             .await;
 
+        let mock_anilist_ok = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": {
+                        "Page": {
+                            "pageInfo": { "hasNextPage": false },
+                            "airingSchedules": [{
+                                "id": 1,
+                                "airingAt": 1782784800,
+                                "episode": 1,
+                                "media": {
+                                    "id": 10,
+                                    "title": { "english": "Frieren" },
+                                    "genres": ["Adventure"],
+                                    "externalLinks": [],
+                                    "relations": { "edges": [] }
+                                }
+                            }]
+                        }
+                    }
+                })),
+            )
+            .mount(&mock_anilist_ok)
+            .await;
+
         // Test Ok branch
+        std::env::set_var("ANILIST_API_URL", mock_anilist_ok.uri());
         let res = calendar_handler(
             axum::extract::State(store.clone()),
             axum::extract::Query(CalendarParams {
@@ -492,8 +562,15 @@ mod tests {
         .await;
         assert!(res.0.get("ok").unwrap().as_bool().unwrap());
 
+        let mock_jikan_err = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&mock_jikan_err)
+            .await;
+
         // Test Err branch
         std::env::set_var("ANILIST_API_URL", mock_anilist_err.uri());
+        std::env::set_var("JIKAN_API_URL", mock_jikan_err.uri());
         let store_err = tracker::TrackerStore::with_file_path(None);
         let res_err = calendar_handler(
             axum::extract::State(store_err.clone()),
@@ -505,8 +582,11 @@ mod tests {
         .await;
         assert!(!res_err.0.get("ok").unwrap().as_bool().unwrap());
         std::env::remove_var("ANILIST_API_URL");
+        std::env::remove_var("JIKAN_API_URL");
 
         // Call with None parameters
+        std::env::set_var("ANILIST_API_URL", mock_anilist_ok.uri());
+        std::env::set_var("JIKAN_API_URL", mock_jikan_err.uri());
         let res_none = calendar_handler(
             State(store.clone()),
             Query(CalendarParams {
@@ -516,8 +596,12 @@ mod tests {
         )
         .await;
         assert!(res_none.0.get("ok").unwrap().as_bool().unwrap());
+        std::env::remove_var("ANILIST_API_URL");
+        std::env::remove_var("JIKAN_API_URL");
 
         // Call with non-existent uncached date to trigger CALENDAR_FETCH_ERROR
+        std::env::set_var("ANILIST_API_URL", mock_anilist_err.uri());
+        std::env::set_var("JIKAN_API_URL", mock_jikan_err.uri());
         let res_err = calendar_handler(
             State(store),
             Query(CalendarParams {
@@ -531,6 +615,8 @@ mod tests {
             res_err.0.get("error").unwrap().as_str().unwrap(),
             "CALENDAR_FETCH_ERROR"
         );
+        std::env::remove_var("ANILIST_API_URL");
+        std::env::remove_var("JIKAN_API_URL");
     }
 
     #[test]

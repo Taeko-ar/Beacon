@@ -13,26 +13,25 @@ describe("App Component", () => {
   });
 
   it("renders calendar view by default", () => {
-    const { getByText, getByTestId, queryByText } = render(() => <App />);
-    expect(queryByText("Library")).toBeNull();
-    expect(getByText("Tracked Shows")).toBeTruthy();
+    const { getByText, getByTestId } = render(() => <App />);
+    expect(getByText("Library")).toBeTruthy();
     expect(getByText("Calendar")).toBeTruthy();
     expect(getByTestId("calendar-view")).toBeTruthy();
     expect(getByTestId("nav-brand")).toBeTruthy();
     expect(getByText("Beacon")).toBeTruthy();
   });
 
-  it("navigates tabs between calendar and tracked shows", () => {
+  it("navigates tabs between calendar and library", () => {
     const { getByText, getByRole, getByTestId } = render(() => <App />);
 
-    expect(getByText("Tracked Shows")).toBeTruthy();
     expect(getByText("Calendar")).toBeTruthy();
+    expect(getByText("Library")).toBeTruthy();
     expect(getByTestId("calendar-view")).toBeTruthy();
 
-    // Switch tab to Tracked Shows
-    const trackingTab = getByRole("button", { name: "Tracked Shows" });
-    fireEvent.click(trackingTab);
-    expect(getByRole("heading", { name: "Tracked Shows" })).toBeTruthy();
+    // Switch tab to Library
+    const libraryTab = getByRole("button", { name: "Library" });
+    fireEvent.click(libraryTab);
+    expect(getByTestId("library-view")).toBeTruthy();
 
     // Switch tab to Calendar
     const calendarTab = getByRole("button", { name: "Calendar" });

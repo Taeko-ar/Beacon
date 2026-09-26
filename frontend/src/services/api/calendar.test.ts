@@ -1,12 +1,82 @@
 import { describe, expect, it, vi } from "vitest";
 import * as apiFetchModule from "./apiFetch";
 import {
+  type CalendarEvent,
   clearCalendarCache,
   ensureJKAnimeLink,
   fetchCalendarEvents,
+  formatFetchStatus,
+  relationMalUrl,
+  releaseBadge,
 } from "./calendar";
 
 describe("calendar API module", () => {
+  it("relationMalUrl searches MAL manga for print formats, anime otherwise", () => {
+    const rel = (format: string) => ({
+      id: 1,
+      title: "Sword & Co",
+      format,
+      relation_type: "PREQUEL",
+    });
+    expect(relationMalUrl(rel("NOVEL"))).toBe(
+      "https://myanimelist.net/manga.php?q=Sword%20%26%20Co",
+    );
+    expect(relationMalUrl(rel("MANGA"))).toBe(
+      "https://myanimelist.net/manga.php?q=Sword%20%26%20Co",
+    );
+    expect(relationMalUrl(rel("ONA"))).toBe(
+      "https://myanimelist.net/anime.php?q=Sword%20%26%20Co",
+    );
+    expect(relationMalUrl(rel(""))).toBe(
+      "https://myanimelist.net/anime.php?q=Sword%20%26%20Co",
+    );
+  });
+
+  it("formatFetchStatus describes backend fetch progress", () => {
+    const base = {
+      active: true,
+      year: 2026,
+      month: 9,
+      source: "AniList",
+      page: 12,
+      last_page: 48,
+      events: 550,
+      rate_limited_secs: null,
+      queued: 0,
+    };
+    expect(formatFetchStatus(null)).toBe("Loading calendar events…");
+    expect(formatFetchStatus({ ...base, active: false })).toBe(
+      "Loading calendar events…",
+    );
+    expect(formatFetchStatus(base)).toBe(
+      "Fetching AniList 2026-09: page 12/48 (550 events)",
+    );
+    expect(
+      formatFetchStatus({
+        ...base,
+        last_page: null,
+        rate_limited_secs: 30,
+        queued: 2,
+      }),
+    ).toBe(
+      "Fetching AniList 2026-09: page 12/? (550 events) · rate-limited, retrying in 30s · 2 queued",
+    );
+    expect(formatFetchStatus({ ...base, source: "MyAnimeList" })).toBe(
+      "Fetching MyAnimeList 2026-09",
+    );
+  });
+
+  it("releaseBadge flags premiere and finale episodes", () => {
+    const ev = (episode: number, total_episodes?: number | null) =>
+      ({ episode, total_episodes }) as CalendarEvent;
+    expect(releaseBadge(ev(1, 12))).toBe("NEW");
+    expect(releaseBadge(ev(1))).toBe("NEW");
+    expect(releaseBadge(ev(12, 12))).toBe("FINAL");
+    expect(releaseBadge(ev(5, 12))).toBeNull();
+    expect(releaseBadge(ev(5, null))).toBeNull();
+    expect(releaseBadge(ev(0, 0))).toBeNull();
+  });
+
   it("ensureJKAnimeLink constructs correct search URL and adds source/chapter", () => {
     const mockEvent = {
       id: 1,

@@ -1,10 +1,9 @@
 import path from "node:path";
-import basicSsl from "@vitejs/plugin-basic-ssl";
 import { defineConfig } from "vite";
 import solidPlugin from "vite-plugin-solid";
 
 export default defineConfig({
-  plugins: [solidPlugin(), basicSsl()],
+  plugins: [solidPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

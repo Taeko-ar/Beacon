@@ -1,15 +1,15 @@
 import { type Component, createSignal } from "solid-js";
 import { CalendarView } from "./components/CalendarView";
 import { ConfigModal } from "./components/ConfigModal";
+import { LibraryView } from "./components/LibraryView";
 import {
   ToastContainer,
   type ToastMessage,
   globalToasts,
 } from "./components/Toast";
-import { TrackedShows } from "./components/TrackedShows";
 
 const App: Component = () => {
-  const [activeTab, setActiveTab] = createSignal<"calendar" | "tracking">(
+  const [activeTab, setActiveTab] = createSignal<"calendar" | "library">(
     "calendar",
   );
   const [toasts] = createSignal<ToastMessage[]>([]);
@@ -56,13 +56,13 @@ const App: Component = () => {
               Calendar
             </button>
             <button
-              id="tab-tracking"
-              data-testid="nav-tracking"
+              id="tab-library"
+              data-testid="nav-library"
               type="button"
-              onClick={() => setActiveTab("tracking")}
-              class={`nav-tab${activeTab() === "tracking" ? " active" : ""}`}
+              onClick={() => setActiveTab("library")}
+              class={`nav-tab${activeTab() === "library" ? " active" : ""}`}
             >
-              Tracked Shows
+              Library
             </button>
           </div>
           <button
@@ -90,7 +90,8 @@ const App: Component = () => {
             </svg>
           </button>
         </nav>
-        {activeTab() === "calendar" ? <CalendarView /> : <TrackedShows />}
+        {activeTab() === "calendar" && <CalendarView />}
+        {activeTab() === "library" && <LibraryView />}
       </div>
       {showConfig() && <ConfigModal onClose={() => setShowConfig(false)} />}
       <ToastContainer toasts={allToasts()} />

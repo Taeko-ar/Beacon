@@ -1,0 +1,16 @@
+anime.local:80 {
+
+    route {
+        sablier http://sablier:10000 {
+            group beacon
+            session_duration 15m
+            dynamic {
+                display_name Beacon
+                theme hacker-terminal
+                show_details true
+            }
+        }
+
+        reverse_proxy frontend:80
+    }
+}

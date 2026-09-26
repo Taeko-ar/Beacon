@@ -6,6 +6,10 @@ export interface TrackedShowItem {
   subgroup?: string;
   resolution?: string;
   lastDownloaded: number;
+  cover_image?: string;
+  synopsis?: string;
+  tags?: string[];
+  year?: number | string;
 }
 
 export interface NyaaRelease {

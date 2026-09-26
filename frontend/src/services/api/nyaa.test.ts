@@ -145,4 +145,50 @@ describe("nyaa service API", () => {
     const emptyJikan = await searchCatalog("EmptyJikan");
     expect(emptyJikan).toEqual([]);
   });
+
+  it("searchCatalog falls back to Kitsu when Jikan fails or is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        // Primary and fallback backend endpoints fail
+        .mockResolvedValueOnce({ ok: false, status: 500 })
+        .mockResolvedValueOnce({ ok: false, status: 500 })
+        // Jikan endpoint returns empty
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({ data: [] }),
+        })
+        // Kitsu endpoint succeeds
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => ({
+            data: [
+              {
+                id: "6589",
+                attributes: {
+                  canonicalTitle: "Sword Art Online",
+                  posterImage: { medium: "https://kitsu.jpg" },
+                  synopsis: "VR world",
+                },
+              },
+            ],
+          }),
+        }),
+    );
+
+    const items = await searchCatalog("Sword Art Online");
+    expect(items).toEqual([
+      {
+        id: "6589",
+        title: "Sword Art Online",
+        image_url: "https://kitsu.jpg",
+        synopsis: "VR world",
+        tags: ["Anime"],
+        is_torrenteable: true,
+      },
+    ]);
+  });
 });

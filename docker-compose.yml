@@ -8,17 +8,53 @@ services:
       - "58889:58889"
     environment:
       - PORT=58889
+      - SQLITE_DB_PATH=/data/anime.db
     volumes:
       - ./data/nyaa-service:/data
     restart: unless-stopped
+    labels:
+      - sablier.enable=true
+      - sablier.group=beacon
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: anime-frontend
-    ports:
-      - "58888:443"
+    expose:
+      - "80"
     depends_on:
       - nyaa-service
     restart: unless-stopped
+    labels:
+      - sablier.enable=true
+      - sablier.group=beacon
+
+  sablier:
+    image: sablierapp/sablier:1.17.0
+    container_name: beacon-sablier
+    restart: always
+    command:
+      - start
+      - --provider.name=docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  proxy:
+    build:
+      context: https://github.com/sablierapp/sablier-caddy-plugin.git
+      args:
+        CADDY_VERSION: "2.8.4"
+    image: caddy:2.8.4-with-sablier
+    container_name: beacon-proxy
+    restart: unless-stopped
+    ports:
+      - "58888:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - sablier
+
+volumes:
+  caddy_data:

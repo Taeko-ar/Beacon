@@ -8,15 +8,39 @@ A fast anime release calendar and RSS tracking (AniList API, Jikan (MAL) API, Ny
 
 ## Local Setup & Running
 
-### Environment & Development
+### Native (recommended on Windows — no Docker/WSL overhead)
+
+```bash
+# Build once
+cd services/nyaa-service && cargo build --release && cd ../..
+cd frontend && pnpm install && pnpm run build && cd ..
+
+# Run (PowerShell)
+$env:PORT = '58889'
+$env:SQLITE_DB_PATH = "$PWD\data\nyaa-service\anime.db"
+Start-Process .\services\nyaa-service\target\release\nyaa-service.exe
+caddy run --config Caddyfile.native
+```
+
+On Windows, `Beacon.vbs` in the Startup folder launches both automatically at logon (no Docker Desktop involved). Combined idle footprint is ~70MB, vs. multiple GB for the old Docker Desktop/WSL2 VM.
+
+On Linux, use two systemd user units instead (`~/.config/systemd/user/beacon-nyaa.service` running the release binary, `beacon-caddy.service` running `caddy run --config Caddyfile.native`, `After=`/`Requires=` chained) — `systemctl --user enable --now beacon-nyaa beacon-caddy` plus `loginctl enable-linger $USER` for boot-time autostart without a login session.
+
+### Docker Compose (Linux/Bazzite via Podman, or on-demand start/stop via Sablier)
 
 ```bash
 # Environment setup
 cp .env.example .env
 
-# Launch via Docker Compose
+# Launch via Docker Compose — includes Sablier + Caddy for start-on-request/stop-on-idle
 docker compose up -d
+```
 
+`docker-compose.yml` and `Caddyfile` (the Docker-flavored one, distinct from `Caddyfile.native`) are still used for this path. Sablier supports Podman as a provider (`--provider.name=podman`), so the same compose file works under `podman-compose` on Bazzite with that one flag changed.
+
+### Development
+
+```bash
 # Frontend dev mode
 cd frontend
 pnpm install

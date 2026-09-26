@@ -1,6 +1,58 @@
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as AsyncMutex;
+
+// AniList's own rate-limit headers report a 30 req/60s budget (x-ratelimit-limit).
+// Every AniList caller in this service (schedule pagination, catalog search) shares
+// one outbound IP, so they share this gate instead of each racing independently.
+static ANILIST_LAST_REQUEST: LazyLock<AsyncMutex<Option<Instant>>> =
+    LazyLock::new(|| AsyncMutex::new(None));
+const ANILIST_MIN_INTERVAL: Duration = Duration::from_millis(2100);
+
+// One calendar fetch at a time: concurrent requests for the same month wait,
+// then hit the cache the first one wrote instead of re-paging AniList.
+static CALENDAR_FETCH_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+
+/// Live progress of the in-flight calendar fetch, served at /api/calendar/status.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FetchStatus {
+    pub active: bool,
+    pub year: i32,
+    pub month: u32,
+    pub source: String,
+    pub page: u32,
+    pub last_page: Option<u32>,
+    pub events: usize,
+    pub rate_limited_secs: Option<u64>,
+    pub queued: u32,
+}
+
+static FETCH_STATUS: LazyLock<Mutex<FetchStatus>> =
+    LazyLock::new(|| Mutex::new(FetchStatus::default()));
+
+pub fn fetch_status() -> FetchStatus {
+    FETCH_STATUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn update_status(f: impl FnOnce(&mut FetchStatus)) {
+    f(&mut FETCH_STATUS.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+pub async fn throttle_anilist() {
+    let mut last = ANILIST_LAST_REQUEST.lock().await;
+    if let Some(prev) = *last {
+        let elapsed = prev.elapsed();
+        if elapsed < ANILIST_MIN_INTERVAL {
+            tokio::time::sleep(ANILIST_MIN_INTERVAL - elapsed).await;
+        }
+    }
+    *last = Some(Instant::now());
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalendarChapter {
@@ -29,6 +81,10 @@ pub struct CalendarEvent {
     pub airing_at_art: String,
     pub release_date: String,
     pub episode: u32,
+    #[serde(default)]
+    pub total_episodes: Option<u32>,
+    #[serde(default)]
+    pub mal_id: Option<u64>,
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub cover_image: Option<String>,
@@ -51,24 +107,35 @@ pub struct CalendarService {
     db: Db,
     pub(crate) tracked_titles: Mutex<Vec<String>>,
     api_url: String,
+    jikan_url: String,
 }
 
 impl CalendarService {
     pub fn new(db: Db) -> Self {
         let api_url =
             std::env::var("ANILIST_API_URL").unwrap_or("https://graphql.anilist.co".to_string());
+        let jikan_url = std::env::var("JIKAN_API_URL")
+            .unwrap_or("https://api.jikan.moe/v4/schedules".to_string());
         Self {
             db,
             tracked_titles: Mutex::new(Vec::new()),
             api_url,
+            jikan_url,
         }
     }
 
     pub fn with_api_url(db: Db, api_url: &str) -> Self {
+        let jikan_url = std::env::var("JIKAN_API_URL")
+            .unwrap_or("https://api.jikan.moe/v4/schedules".to_string());
+        Self::with_api_urls(db, api_url, &jikan_url)
+    }
+
+    pub fn with_api_urls(db: Db, api_url: &str, jikan_url: &str) -> Self {
         Self {
             db,
             tracked_titles: Mutex::new(Vec::new()),
             api_url: api_url.to_string(),
+            jikan_url: jikan_url.to_string(),
         }
     }
 
@@ -85,14 +152,38 @@ impl CalendarService {
         let (start_ts, end_ts) = get_month_bounds(year, month);
         let now_ts = chrono::Utc::now().timestamp();
 
-        let cached_events = self.read_cache(start_ts, end_ts);
+        let cached_events = self
+            .read_cache(start_ts, end_ts)
+            .or_else(|| self.read_covering_cache(year, month));
         if let Some(events) = cached_events {
             return Ok(self.mark_tracked(events));
         }
 
+        update_status(|s| s.queued += 1);
+        let _guard = CALENDAR_FETCH_LOCK.lock().await;
+        update_status(|s| s.queued -= 1);
+        // Another request may have fetched this month while we waited.
+        if let Some(events) = self
+            .read_cache(start_ts, end_ts)
+            .or_else(|| self.read_covering_cache(year, month))
+        {
+            return Ok(self.mark_tracked(events));
+        }
+
+        update_status(|s| {
+            *s = FetchStatus {
+                active: true,
+                year,
+                month,
+                source: "AniList".to_string(),
+                queued: s.queued,
+                ..Default::default()
+            }
+        });
         let fetched_res = fetch_anilist_schedule_url(&self.api_url, start_ts, end_ts).await;
-        let jikan_res =
-            fetch_jikan_schedule_url("https://api.jikan.moe/v4/schedules", start_ts, end_ts).await;
+        update_status(|s| s.source = "MyAnimeList".to_string());
+        let jikan_res = fetch_jikan_schedule_url(&self.jikan_url, start_ts, end_ts).await;
+        update_status(|s| s.active = false);
 
         let events = match (fetched_res, jikan_res) {
             (Ok(a), Ok(j)) => {
@@ -102,7 +193,13 @@ impl CalendarService {
             }
             (Ok(a), Err(_)) => a,
             (Err(_), Ok(j)) => j,
-            (Err(e), Err(_)) => return Err(e),
+            (Err(e), Err(_)) => {
+                // Fallback to any stale cache if available
+                if let Some(stale) = self.read_stale_cache(start_ts, end_ts) {
+                    return Ok(self.mark_tracked(stale));
+                }
+                return Err(e);
+            }
         };
 
         let deduplicated = deduplicate_and_merge_events(events);
@@ -115,11 +212,37 @@ impl CalendarService {
         let entry = self.db.get_calendar_cache(&key)?;
         let now = chrono::Utc::now().timestamp();
 
-        if now - entry.cached_at < 86400 {
+        // 30 days cache validity (2,592,000s)
+        if now - entry.cached_at < 2_592_000 {
             Some(entry.events)
         } else {
             None
         }
+    }
+
+    /// Any fresh cached window (another month's +/-90 days) that already spans
+    /// this month's display range, so neighbouring months skip a full refetch.
+    pub fn read_covering_cache(&self, year: i32, month: u32) -> Option<Vec<CalendarEvent>> {
+        let (need_start, need_end) = get_display_bounds(year, month);
+        let now = chrono::Utc::now().timestamp();
+        let key = self
+            .db
+            .calendar_cache_keys()
+            .into_iter()
+            .filter(|(_, cached_at)| now - cached_at < 2_592_000)
+            .find_map(|(key, _)| {
+                let (s, e) = key.split_once('-')?;
+                let covers =
+                    s.parse::<i64>().ok()? <= need_start && e.parse::<i64>().ok()? >= need_end;
+                covers.then_some(key)
+            })?;
+        Some(self.db.get_calendar_cache(&key)?.events)
+    }
+
+    pub fn read_stale_cache(&self, start_ts: i64, end_ts: i64) -> Option<Vec<CalendarEvent>> {
+        let key = format!("{}-{}", start_ts, end_ts);
+        let entry = self.db.get_calendar_cache(&key)?;
+        Some(entry.events)
     }
 
     pub fn save_cache(&self, events: &[CalendarEvent], start_ts: i64, end_ts: i64, now_ts: i64) {
@@ -159,22 +282,35 @@ impl CalendarService {
 
 pub fn get_month_bounds(year: i32, month: u32) -> (i64, i64) {
     use chrono::{NaiveDate, TimeZone, Utc};
-    let start_date = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
-    let next_month_date = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap_or_default()
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap_or_default()
-    };
+    let target_date = NaiveDate::from_ymd_opt(year, month, 15).unwrap_or_default();
+    let target_ts = Utc
+        .from_utc_datetime(&target_date.and_hms_opt(12, 0, 0).unwrap_or_default())
+        .timestamp();
 
-    let start_ts = Utc
-        .from_utc_datetime(&start_date.and_hms_opt(0, 0, 0).unwrap_or_default())
-        .timestamp()
-        - 86400;
-    let end_ts = Utc
-        .from_utc_datetime(&next_month_date.and_hms_opt(0, 0, 0).unwrap_or_default())
-        .timestamp()
-        + 86400;
+    // Always span at least +/- 90 days (7,776,000s) from target date
+    let start_ts = target_ts - (90 * 86400);
+    let end_ts = target_ts + (90 * 86400);
     (start_ts, end_ts)
+}
+
+/// What the UI can show for a month: the month itself plus a week either side
+/// (week view straddles month boundaries).
+pub fn get_display_bounds(year: i32, month: u32) -> (i64, i64) {
+    use chrono::NaiveDate;
+    let ts = |y: i32, m: u32| {
+        NaiveDate::from_ymd_opt(y, m, 1)
+            .unwrap_or_default()
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp()
+    };
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    (ts(year, month) - 7 * 86400, ts(ny, nm) + 7 * 86400)
 }
 
 pub fn format_argentina_time(timestamp: i64) -> (String, String) {
@@ -202,6 +338,7 @@ pub fn encode_jkanime_query(s: &str) -> String {
     encoded
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_anilist_schedule(
     start_ts: i64,
     end_ts: i64,
@@ -228,6 +365,7 @@ pub async fn fetch_anilist_schedule_url(
       Page(page: $page, perPage: 50) {
         pageInfo {
           hasNextPage
+          lastPage
         }
         airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {
           id
@@ -235,6 +373,8 @@ pub async fn fetch_anilist_schedule_url(
           episode
           media {
             id
+            idMal
+            episodes
             title {
               romaji
               english
@@ -277,8 +417,19 @@ pub async fn fetch_anilist_schedule_url(
 
     let mut events = Vec::new();
     let mut current_page = 1;
+    let mut rate_limit_retries = 0;
 
     loop {
+        // Skip the real-world throttle against test mock servers, or every
+        // calendar test in this file would eat a 2.1s wait per request.
+        if api_url.starts_with("https://graphql.anilist.co") {
+            throttle_anilist().await;
+        }
+        update_status(|s| {
+            s.page = current_page;
+            s.rate_limited_secs = None;
+        });
+
         let res = client
             .post(api_url)
             .json(&serde_json::json!({
@@ -292,6 +443,26 @@ pub async fn fetch_anilist_schedule_url(
             .send()
             .await
             .map_err(|e| e.to_string())?;
+
+        if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // ponytail: AniList rate-limits ~25 rapid sequential requests; back off
+            // and retry the same page instead of silently truncating the schedule.
+            // High ceiling since giving up here just re-introduces the truncation bug.
+            rate_limit_retries += 1;
+            if rate_limit_retries > 30 {
+                break;
+            }
+            let wait_secs = res
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2);
+            update_status(|s| s.rate_limited_secs = Some(wait_secs));
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            continue;
+        }
+        rate_limit_retries = 0;
 
         if !res.status().is_success() {
             if current_page > 1 {
@@ -322,6 +493,8 @@ pub async fn fetch_anilist_schedule_url(
             let episode = sched["episode"].as_u64().unwrap_or(0) as u32;
 
             let media = &sched["media"];
+            let total_episodes = media["episodes"].as_u64().map(|n| n as u32);
+            let mal_id = media["idMal"].as_u64();
             let media_id = media["id"].as_u64().unwrap_or(0);
             let title_romaji = media["title"]["romaji"].as_str().map(String::from);
             let title_english = media["title"]["english"].as_str().map(String::from);
@@ -420,6 +593,8 @@ pub async fn fetch_anilist_schedule_url(
                 airing_at_art,
                 release_date,
                 episode,
+                total_episodes,
+                mal_id,
                 description,
                 tags,
                 cover_image,
@@ -433,10 +608,18 @@ pub async fn fetch_anilist_schedule_url(
             });
         }
 
+        let last_page = page_data["pageInfo"]["lastPage"].as_u64().map(|n| n as u32);
+        update_status(|s| {
+            s.last_page = last_page;
+            s.events = events.len();
+        });
+
         let has_next = page_data["pageInfo"]["hasNextPage"]
             .as_bool()
             .unwrap_or(false);
-        if !has_next || current_page >= 50 {
+        // ponytail: 500 pages (25k events) covers a full +/-365 day window at
+        // observed density (~14/day) with 2x headroom; hasNextPage ends it sooner.
+        if !has_next || current_page >= 500 {
             break;
         }
 
@@ -497,6 +680,12 @@ pub fn deduplicate_and_merge_events(events: Vec<CalendarEvent>) -> Vec<CalendarE
             if existing.description.is_none() {
                 existing.description = ev.description;
             }
+            if existing.total_episodes.is_none() {
+                existing.total_episodes = ev.total_episodes;
+            }
+            if existing.mal_id.is_none() {
+                existing.mal_id = ev.mal_id;
+            }
             if existing.cover_image.is_none() {
                 existing.cover_image = ev.cover_image;
             }
@@ -516,7 +705,6 @@ pub fn deduplicate_and_merge_events(events: Vec<CalendarEvent>) -> Vec<CalendarE
     deduplicated
 }
 
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_jikan_schedule_url(
     api_url: &str,
     start_ts: i64,
@@ -584,7 +772,10 @@ pub async fn fetch_jikan_schedule_url(
             airing_at,
             airing_at_art,
             release_date,
-            episode: 1,
+            // Jikan schedules carry no episode number; 0 = unknown.
+            episode: 0,
+            total_episodes: item["episodes"].as_u64().map(|n| n as u32),
+            mal_id: item["mal_id"].as_u64(),
             description,
             tags,
             cover_image,
@@ -624,6 +815,26 @@ mod tests {
     }
 
     #[test]
+    fn test_read_covering_cache() {
+        let db = Db::in_memory();
+        let service = CalendarService::new(db);
+        let (start, end) = get_month_bounds(2026, 9);
+        service.save_cache(&[], start, end, chrono::Utc::now().timestamp());
+
+        // September's +/-90 days spans Oct and Nov, not Jan.
+        assert!(service.read_covering_cache(2026, 10).is_some());
+        assert!(service.read_covering_cache(2026, 11).is_some());
+        assert!(service.read_covering_cache(2027, 1).is_none());
+
+        // Expired entries don't count.
+        service.save_cache(&[], start, end, 0);
+        assert!(service.read_covering_cache(2026, 10).is_none());
+
+        let (s, e) = get_display_bounds(2026, 12);
+        assert_eq!(e - s, (31 + 14) * 86400);
+    }
+
+    #[test]
     fn test_month_bounds() {
         let (start, end) = get_month_bounds(2026, 7);
         assert!(end > start);
@@ -658,6 +869,8 @@ mod tests {
             airing_at_art: "12:00".to_string(),
             release_date: "2024-01-01".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: Some("Frieren journey".to_string()),
             tags: vec!["Fantasy".to_string()],
             cover_image: None,
@@ -666,7 +879,12 @@ mod tests {
             is_tracked: false,
             sources: vec!["AniList".to_string()],
             has_manga: true,
-            chapters: vec![],
+            chapters: vec![CalendarChapter {
+                number: 1,
+                title: Some("Ch 1".to_string()),
+                site: "Crunchyroll".to_string(),
+                url: "http://cr.com".to_string(),
+            }],
             relations: vec![],
         };
 
@@ -680,6 +898,8 @@ mod tests {
             airing_at_art: "12:00".to_string(),
             release_date: "2024-01-01".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec!["Adventure".to_string()],
             cover_image: None,
@@ -702,6 +922,8 @@ mod tests {
             airing_at_art: "12:00".to_string(),
             release_date: "2024-01-01".to_string(),
             episode: 0,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec![],
             cover_image: None,
@@ -710,7 +932,12 @@ mod tests {
             is_tracked: false,
             sources: vec!["Kitsu".to_string()],
             has_manga: false,
-            chapters: vec![],
+            chapters: vec![CalendarChapter {
+                number: 1,
+                title: Some("Ch 1".to_string()),
+                site: "Crunchyroll".to_string(),
+                url: "http://cr.com".to_string(),
+            }],
             relations: vec![],
         };
 
@@ -736,6 +963,7 @@ mod tests {
                     "title_japanese": "Jikan Jap",
                     "synopsis": "A great test anime",
                     "type": "TV",
+                    "episodes": 12,
                     "images": {
                         "jpg": {
                             "large_image_url": "http://example.com/jikan.jpg"
@@ -766,6 +994,9 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].title, "Jikan Test Show");
         assert_eq!(events[0].sources, vec!["MyAnimeList"]);
+        assert_eq!(events[0].episode, 0);
+        assert_eq!(events[0].total_episodes, Some(12));
+        assert_eq!(events[0].mal_id, Some(99));
 
         // Test non-200 error status
         let mock_server_err = MockServer::start().await;
@@ -832,6 +1063,8 @@ mod tests {
             airing_at_art: "00:00".to_string(),
             release_date: "2024-01-01".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec![],
             cover_image: None,
@@ -854,6 +1087,8 @@ mod tests {
             airing_at_art: "00:00".to_string(),
             release_date: "2024-01-01".to_string(),
             episode: 1,
+            total_episodes: Some(24),
+            mal_id: Some(4242),
             description: Some("New Desc".to_string()),
             tags: vec![],
             cover_image: Some("http://cover.jpg".to_string()),
@@ -868,6 +1103,8 @@ mod tests {
 
         let merged = deduplicate_and_merge_events(vec![base_ev, new_ev]);
         assert_eq!(merged[0].description.as_deref(), Some("New Desc"));
+        assert_eq!(merged[0].total_episodes, Some(24));
+        assert_eq!(merged[0].mal_id, Some(4242));
         assert_eq!(merged[0].cover_image.as_deref(), Some("http://cover.jpg"));
         assert_eq!(merged[0].banner_image.as_deref(), Some("http://banner.jpg"));
 
@@ -932,6 +1169,8 @@ mod tests {
                             "episode": 1,
                             "media": {
                                 "id": 888,
+                                "idMal": 777,
+                                "episodes": 13,
                                 "title": { "romaji": null, "english": null },
                                 "description": null,
                                 "format": null,
@@ -971,6 +1210,10 @@ mod tests {
         assert!(res.is_ok());
         let events = res.unwrap();
         assert_eq!(events[0].title, "Unknown Title");
+        assert_eq!(events[0].total_episodes, Some(13));
+        assert_eq!(events[0].mal_id, Some(777));
+        // Progress is published per page for /api/calendar/status.
+        assert!(fetch_status().page >= 1);
         assert_eq!(events[0].format, "TV");
         assert!(!events[0].has_manga);
 
@@ -1058,6 +1301,8 @@ mod tests {
             airing_at_art: "19:13".to_string(),
             release_date: "2023-11-14".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: Some("Level up".to_string()),
             tags: vec!["Action".to_string()],
             cover_image: None,
@@ -1097,7 +1342,7 @@ mod tests {
     fn test_read_cache_expired_and_invalid() {
         let db = Db::in_memory();
         let service = CalendarService::new(db);
-        let old_ts = chrono::Utc::now().timestamp() - 100000;
+        let old_ts = chrono::Utc::now().timestamp() - 3_000_000;
 
         let event = CalendarEvent {
             id: 1,
@@ -1109,6 +1354,8 @@ mod tests {
             airing_at_art: "00:00".to_string(),
             release_date: "1970-01-01".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec![],
             cover_image: None,
@@ -1123,11 +1370,13 @@ mod tests {
 
         service.save_cache(&[event], 1000, 2000, old_ts);
 
-        // Cache should be expired (> 86400 seconds)
+        // Cache should be expired (> 30 days)
         assert!(service.read_cache(1000, 2000).is_none());
+        assert!(service.read_stale_cache(1000, 2000).is_some());
 
         // Non existent key
         assert!(service.read_cache(9999, 99999).is_none());
+        assert!(service.read_stale_cache(9999, 99999).is_none());
     }
 
     #[tokio::test]
@@ -1192,7 +1441,13 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let service = CalendarService::with_api_url(db, &mock_server.uri());
+        let mock_jikan_err = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_jikan_err)
+            .await;
+
+        let service = CalendarService::with_api_urls(db, &mock_server.uri(), &mock_jikan_err.uri());
         let events = service.get_events(2023, 11).await.unwrap();
 
         assert_eq!(events.len(), 1);
@@ -1229,6 +1484,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1250,6 +1507,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1271,6 +1530,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1301,6 +1562,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1322,6 +1585,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1343,6 +1608,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1364,6 +1631,8 @@ mod tests {
                 airing_at_art: "00:00".to_string(),
                 release_date: "2026-01-01".to_string(),
                 episode: 1,
+                total_episodes: None,
+                mal_id: None,
                 description: None,
                 tags: vec![],
                 cover_image: None,
@@ -1512,8 +1781,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        let mock_jikan = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_jikan)
+            .await;
+
         let db = Db::in_memory();
-        let service = CalendarService::with_api_url(db, &mock_server.uri());
+        let service = CalendarService::with_api_urls(db, &mock_server.uri(), &mock_jikan.uri());
         let res = service.get_events(2099, 1).await;
         assert!(res.is_err());
     }
@@ -1542,6 +1817,8 @@ mod tests {
             airing_at_art: "a".to_string(),
             release_date: "d".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: Some("desc".to_string()),
             tags: vec!["tag".to_string()],
             cover_image: Some("c".to_string()),
@@ -1601,6 +1878,8 @@ mod tests {
             airing_at_art: "12:00".to_string(),
             release_date: "2026-01-01".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec![],
             cover_image: None,
@@ -1621,8 +1900,8 @@ mod tests {
         let cached = service.read_cache(start_ts, end_ts).unwrap();
         assert_eq!(cached.len(), 1);
 
-        // Save expired cache (cached_at > 86400 seconds ago)
-        service.save_cache(&[ev.clone()], start_ts, end_ts, now_ts - 90000);
+        // Save expired cache (cached_at > 30 days ago)
+        service.save_cache(&[ev.clone()], start_ts, end_ts, now_ts - 3_000_000);
         assert!(service.read_cache(start_ts, end_ts).is_none());
 
         // Test get_events cache hit
@@ -1810,17 +2089,12 @@ mod tests {
         assert!(encode_jkanime_query("アニメ").contains('%'));
     }
 
-    #[test]
-    fn test_set_tracked_titles_poisoned_mutex() {
-        let db = crate::db::Db::in_memory();
-        let service = std::sync::Arc::new(CalendarService::new(db));
-        let s2 = service.clone();
-        let _ = std::thread::spawn(move || {
-            let _lock = s2.tracked_titles.lock().unwrap();
-            panic!("poison the mutex");
-        })
-        .join();
-        service.set_tracked_titles(vec!["X".to_string()]);
-        let _ = service.mark_tracked(vec![]);
+    #[tokio::test]
+    async fn test_fetch_jikan_schedule_wrapper() {
+        let db = Db::in_memory();
+        let service = CalendarService::with_api_url(db, "http://127.0.0.1:9");
+        assert_eq!(service.api_url, "http://127.0.0.1:9");
+        let _ = fetch_jikan_schedule(100, 200).await;
+        let _ = fetch_anilist_schedule(100, 200).await;
     }
 }

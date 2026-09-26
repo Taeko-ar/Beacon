@@ -57,6 +57,8 @@ Thumbs.db
 *.swo
 
 # AI / Agent custom config
+.claude
+.mcp.json
 .agents
 .github/agents
 frontend/*.md

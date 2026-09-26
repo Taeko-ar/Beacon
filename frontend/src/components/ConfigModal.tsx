@@ -1,6 +1,9 @@
 import type { Component } from "solid-js";
 import { createSignal } from "solid-js";
-import { clearCalendarCache } from "../services/api/calendar";
+import {
+  clearCalendarCache,
+  triggerCalendarRefresh,
+} from "../services/api/calendar";
 
 export interface ConfigModalProps {
   onClose: () => void;
@@ -15,6 +18,7 @@ export const ConfigModal: Component<ConfigModalProps> = (props) => {
     setMessage(null);
     try {
       await clearCalendarCache();
+      triggerCalendarRefresh();
       setMessage("Configuration refetched successfully!");
     } catch {
       setMessage("Failed to refetch configuration.");

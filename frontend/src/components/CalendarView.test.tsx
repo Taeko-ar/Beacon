@@ -2,11 +2,11 @@ import { fireEvent, render, waitFor } from "solid-testing-library";
 import { describe, expect, it, vi } from "vitest";
 import * as calendarApi from "../services/api/calendar";
 import * as trackingApi from "../services/api/tracking";
+import { CalendarView } from "./CalendarView";
 import {
-  CalendarView,
   getModalMainWatchChapters,
   getModalOtherBadges,
-} from "./CalendarView";
+} from "./ShowDetailModal";
 
 describe("CalendarView Component", () => {
   it("getModalMainWatchChapters and getModalOtherBadges handle null and non-null events", () => {
@@ -33,7 +33,22 @@ describe("CalendarView Component", () => {
       relations: [],
     };
     expect(getModalMainWatchChapters(testEv)).toHaveLength(1);
-    expect(getModalOtherBadges(testEv)).toHaveLength(2);
+    const badges = getModalOtherBadges(testEv);
+    expect(badges).toHaveLength(3);
+    expect(badges.at(-1)).toEqual({
+      site: "MyAnimeList",
+      url: "https://myanimelist.net/anime.php?q=Test",
+    });
+
+    // Known MAL id links the show page; Jikan's "MyAnimeList" source isn't duplicated.
+    const malBadges = getModalOtherBadges({
+      ...testEv,
+      mal_id: 42,
+      sources: ["MyAnimeList"],
+    }).filter((b) => b.site === "MyAnimeList");
+    expect(malBadges).toEqual([
+      { site: "MyAnimeList", url: "https://myanimelist.net/anime/42" },
+    ]);
   });
 
   it("renders calendar with current week header and grid", async () => {
@@ -219,7 +234,7 @@ describe("CalendarView Component", () => {
 
     await waitFor(() => {
       expect(getByTestId("event-modal")).toBeTruthy();
-      expect(getByText("Anime Only / Original")).toBeTruthy();
+      expect(getByTestId("modal-source").textContent).toBe("Original");
       expect(getByText("No description provided.")).toBeTruthy();
     });
 
@@ -329,8 +344,8 @@ describe("CalendarView Component", () => {
 
     await waitFor(() => {
       expect(getByTestId("event-modal")).toBeTruthy();
-      expect(getByText("Has Manga Adaptation")).toBeTruthy();
-      expect(getByText("✓ Tracked")).toBeTruthy();
+      expect(getByTestId("modal-source").textContent).toBe("Manga");
+      expect(getByText("Tracked")).toBeTruthy();
       expect(getByText("One Piece Film Red")).toBeTruthy();
     });
 
@@ -346,7 +361,7 @@ describe("CalendarView Component", () => {
     await waitFor(() => {
       expect(getByTestId("event-modal")).toBeTruthy();
     });
-    const closeBtn = getByText("✕");
+    const closeBtn = getByTestId("modal-close-btn");
     fireEvent.click(closeBtn);
     expect(queryByTestId("event-modal")).toBeNull();
   });
@@ -506,13 +521,19 @@ describe("CalendarView Component", () => {
       expect(getByTestId("calendar-event-802")).toBeTruthy();
     });
 
-    // Open filter and set season = autumn
+    // Pick a season today is NOT in, so the assertion holds year-round.
+    // The Oct 15 event still exercises the autumn branch when filtering.
+    const todayMonth = new Date().getMonth();
+    const filterValue =
+      todayMonth >= 8 && todayMonth <= 10 ? "winter" : "autumn";
+
+    // Open filter and set season
     fireEvent.click(getByTestId("calendar-filter-btn"));
     fireEvent.change(getByTestId("filter-season-select"), {
-      target: { value: "autumn" },
+      target: { value: filterValue },
     });
 
-    // Today show (non-autumn) should be hidden
+    // Today show (out of the selected season) should be hidden
     await waitFor(() => {
       expect(queryByTestId("calendar-event-802")).toBeNull();
     });
@@ -772,18 +793,18 @@ describe("CalendarView Component", () => {
 
     fireEvent.click(getByTestId("modal-track-btn"));
     await waitFor(() => {
-      expect(getByText("✓ Tracked")).toBeTruthy();
+      expect(getByText("Tracked")).toBeTruthy();
     });
     expect(getByTestId("modal-untrack-btn")).toBeTruthy();
     expect(queryByTestId("modal-track-btn")).toBeNull();
 
     fireEvent.click(getByTestId("modal-untrack-btn"));
     await waitFor(() => {
-      expect(queryByText("✓ Tracked")).toBeNull();
+      expect(queryByText("Tracked")).toBeNull();
     });
     expect(getByTestId("modal-track-btn")).toBeTruthy();
     expect(queryByTestId("modal-untrack-btn")).toBeNull();
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
   });
 
   it("covers remaining branches (spring/winter season, other event map in track/untrack)", async () => {
@@ -884,13 +905,13 @@ describe("CalendarView Component", () => {
     });
 
     // Verify activeModalEvent was updated in state
-    expect(getByText("✓ Tracked")).toBeTruthy();
+    expect(getByText("Tracked")).toBeTruthy();
 
     fireEvent.click(getByTestId("modal-untrack-btn"));
     await waitFor(() => {
       expect(getByTestId("modal-track-btn")).toBeTruthy();
     });
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
   });
 
   it("handles prev/next month day card keydowns and rendering of extra source badges in modal", async () => {
@@ -990,7 +1011,7 @@ describe("CalendarView Component", () => {
       expect(getByTestId("source-badge-disney-")).toBeTruthy();
     });
 
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
 
     await waitFor(() => {
       expect(getByTestId("calendar-event-991")).toBeTruthy();
@@ -1002,7 +1023,7 @@ describe("CalendarView Component", () => {
     await waitFor(() => {
       expect(getByTestId("event-modal")).toBeTruthy();
     });
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
 
     await waitFor(() => {
       expect(getByTestId("calendar-event-992")).toBeTruthy();
@@ -1014,7 +1035,7 @@ describe("CalendarView Component", () => {
     await waitFor(() => {
       expect(getByTestId("event-modal")).toBeTruthy();
     });
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
 
     const prevDayElem = queryByTestId("calendar-prev-day-28");
     if (prevDayElem) {
@@ -1182,7 +1203,7 @@ describe("CalendarView Component", () => {
         false,
       );
     });
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
 
     fireEvent.click(getByTestId("calendar-event-996"));
     await waitFor(() => {
@@ -1318,7 +1339,7 @@ describe("CalendarView Component", () => {
 
     const trackBtn = getByTestId("modal-track-btn");
     fireEvent.click(trackBtn);
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
     await new Promise((r) => setTimeout(r, 60));
 
     fireEvent.click(getByTestId("calendar-event-9992"));
@@ -1327,7 +1348,7 @@ describe("CalendarView Component", () => {
     });
     const untrackBtn = getByTestId("modal-untrack-btn");
     fireEvent.click(untrackBtn);
-    fireEvent.click(getByText("✕"));
+    fireEvent.click(getByTestId("modal-close-btn"));
     await new Promise((r) => setTimeout(r, 60));
   });
 

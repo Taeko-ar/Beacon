@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::nyaa::NyaaRelease;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TrackedShow {
     pub id: String,
     pub title: String,
@@ -12,6 +12,14 @@ pub struct TrackedShow {
     pub preferred_resolution: Option<String>,
     #[serde(rename = "lastDownloaded")]
     pub last_downloaded_episode: u32,
+    #[serde(default)]
+    pub cover_image: Option<String>,
+    #[serde(default)]
+    pub synopsis: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub year: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -127,6 +135,7 @@ mod tests {
             preferred_subgroup: Some("SubsPlease".to_string()),
             preferred_resolution: Some("1080p".to_string()),
             last_downloaded_episode: 4,
+            ..Default::default()
         };
 
         store.add(show.clone());
@@ -151,6 +160,7 @@ mod tests {
             preferred_subgroup: Some("SubsPlease".to_string()),
             preferred_resolution: Some("1080p".to_string()),
             last_downloaded_episode: 4,
+            ..Default::default()
         };
 
         let release_match = NyaaRelease {
@@ -225,6 +235,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 1,
+            ..Default::default()
         };
 
         store.add(show.clone());
@@ -257,6 +268,7 @@ mod tests {
             preferred_subgroup: Some("Group".to_string()),
             preferred_resolution: Some("1080p".to_string()),
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         store_mem.add(show.clone());
         assert_eq!(store_mem.list().len(), 1);
@@ -289,6 +301,7 @@ mod tests {
             preferred_subgroup: Some("s".to_string()),
             preferred_resolution: Some("r".to_string()),
             last_downloaded_episode: 1,
+            ..Default::default()
         };
         let _ = show.clone();
         let _ = format!("{:?}", show);
@@ -308,6 +321,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         store.add(show);
         assert_eq!(store.list().len(), 1);
@@ -329,6 +343,7 @@ mod tests {
             preferred_subgroup: Some("subsplease".to_string()),
             preferred_resolution: Some("1080P".to_string()),
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         let release = NyaaRelease {
             title: "[SubsPlease] Frieren - 05 (1080p) [ABCD1234].mkv".to_string(),

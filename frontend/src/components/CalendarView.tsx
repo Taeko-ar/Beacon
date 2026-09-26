@@ -5,18 +5,25 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  onCleanup,
 } from "solid-js";
 import {
   type CalendarEvent,
+  calendarRefreshTick,
   clearCalendarCache,
   fetchCalendarEvents,
+  fetchCalendarStatus,
+  formatFetchStatus,
+  releaseBadge,
 } from "../services/api/calendar";
 import {
   addTrackedShow,
   fetchTrackedShows,
   removeTrackedShow,
 } from "../services/api/tracking";
+import { descriptionToHtml } from "../services/format";
 import "./CalendarView.css";
+import { ShowDetailModal } from "./ShowDetailModal";
 import { showToast } from "./Toast";
 
 const DAYS_OF_WEEK = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -43,33 +50,6 @@ const AVAILABLE_SOURCES = [
   "Disney+",
   "HIDIVE",
 ];
-
-const isMainWatchSource = (site: string) => {
-  const s = site.toLowerCase();
-  return s === "jkanime" || s === "crunchyroll";
-};
-
-export const getModalMainWatchChapters = (ev: CalendarEvent | null) => {
-  return ev ? ev.chapters.filter((ch) => isMainWatchSource(ch.site)) : [];
-};
-
-export const getModalOtherBadges = (ev: CalendarEvent | null) => {
-  if (!ev) return [];
-
-  const chapterBadges = ev.chapters
-    .filter((ch) => !isMainWatchSource(ch.site))
-    .map((ch) => ({ site: ch.site, url: ch.url }));
-
-  const existingSites = new Set(chapterBadges.map((b) => b.site.toLowerCase()));
-  const extraSources = (ev.sources || [])
-    .filter((s) => !isMainWatchSource(s) && !existingSites.has(s.toLowerCase()))
-    .map((s) => ({
-      site: s,
-      url: `https://www.google.com/search?q=${encodeURIComponent(`${ev.title} ${s}`)}`,
-    }));
-
-  return [...chapterBadges, ...extraSources];
-};
 
 /* v8 ignore start */
 export const CalendarView: Component = () => {
@@ -108,18 +88,6 @@ export const CalendarView: Component = () => {
 
   // Track action state (per-modal)
   const [trackingInProgress, setTrackingInProgress] = createSignal(false);
-  const [copySuccess, setCopySuccess] = createSignal(false);
-
-  const handleCopyTitle = async (titleText: string) => {
-    try {
-      await navigator.clipboard.writeText(titleText);
-      setCopySuccess(true);
-      showToast("Title copied to clipboard!", "success");
-      setTimeout(() => setCopySuccess(false), 2000);
-    } catch {
-      showToast("Failed to copy title", "error");
-    }
-  };
 
   const isMobileInitial =
     typeof window !== "undefined" && window.innerWidth <= 768;
@@ -167,6 +135,29 @@ export const CalendarView: Component = () => {
     currentDate();
     viewMode();
     loadEvents();
+  });
+
+  // Poll backend fetch progress while loading, so a cold AniList fetch
+  // (~2s/page, rate-limited) shows what it is doing instead of a bare spinner.
+  const [fetchStatusText, setFetchStatusText] = createSignal(
+    formatFetchStatus(null),
+  );
+  createEffect(() => {
+    if (!loading()) return;
+    const poll = async () =>
+      setFetchStatusText(formatFetchStatus(await fetchCalendarStatus()));
+    poll();
+    const timer = setInterval(poll, 2000);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  // Refetch button (ConfigModal) bumps this — snap back to today so the
+  // reload actually centers on +/-90 days from the current date.
+  createEffect(() => {
+    if (calendarRefreshTick() === 0) return;
+    const today = new Date();
+    setCurrentDate(today);
+    setSelectedDay(today.getDate());
   });
 
   const availableTags = createMemo(() => {
@@ -449,6 +440,14 @@ export const CalendarView: Component = () => {
       }}
     >
       <span class="calendar-event-chip-time">{ev.airing_at_art}</span>
+      {releaseBadge(ev) && (
+        <span
+          class={`release-badge ${releaseBadge(ev)?.toLowerCase()}`}
+          data-testid="release-badge"
+        >
+          {releaseBadge(ev)}
+        </span>
+      )}
       <span class="calendar-event-chip-title">{ev.title}</span>
     </button>
   );
@@ -689,7 +688,7 @@ export const CalendarView: Component = () => {
             data-testid="calendar-loading-container"
           >
             <div class="spinner spinner-lg" />
-            <span>Loading calendar events…</span>
+            <span data-testid="calendar-fetch-status">{fetchStatusText()}</span>
           </div>
         }
       >
@@ -726,6 +725,14 @@ export const CalendarView: Component = () => {
                     <span class="calendar-event-chip-time">
                       {ev.airing_at_art}
                     </span>
+                    {releaseBadge(ev) && (
+                      <span
+                        class={`release-badge ${releaseBadge(ev)?.toLowerCase()}`}
+                        data-testid="release-badge"
+                      >
+                        {releaseBadge(ev)}
+                      </span>
+                    )}
                     <span class="calendar-event-chip-title">{ev.title}</span>
                   </button>
                 )}
@@ -798,6 +805,14 @@ export const CalendarView: Component = () => {
                                   <span class="calendar-event-chip-time">
                                     {ev.airing_at_art}
                                   </span>
+                                  {releaseBadge(ev) && (
+                                    <span
+                                      class={`release-badge ${releaseBadge(ev)?.toLowerCase()}`}
+                                      data-testid="release-badge"
+                                    >
+                                      {releaseBadge(ev)}
+                                    </span>
+                                  )}
                                   <span class="calendar-event-chip-title">
                                     {ev.title}
                                   </span>
@@ -948,15 +963,29 @@ export const CalendarView: Component = () => {
                 />
               )}
               <div>
-                <div class="tooltip-title">{info().event.title}</div>
+                <div class="tooltip-title">
+                  {info().event.title}{" "}
+                  {releaseBadge(info().event) && (
+                    <span
+                      class={`release-badge ${releaseBadge(info().event)?.toLowerCase()}`}
+                      data-testid="release-badge"
+                    >
+                      {releaseBadge(info().event)}
+                    </span>
+                  )}
+                </div>
                 <div class="tooltip-time">
                   ART Release: {info().event.airing_at_art}
                 </div>
               </div>
             </div>
-            <div class="tooltip-desc">
-              {info().event.description || "No description available."}
-            </div>
+            <div
+              class="tooltip-desc"
+              innerHTML={
+                descriptionToHtml(info().event.description) ||
+                "No description available."
+              }
+            />
             <div class="tooltip-tags">
               <For each={info().event.tags.slice(0, 3)}>
                 {(tag) => <span class="tooltip-tag-pill">{tag}</span>}
@@ -966,184 +995,14 @@ export const CalendarView: Component = () => {
         )}
       </Show>
 
-      {/* Event Detail Click Modal */}
-      <Show when={activeModalEvent()}>
-        {(ev) => (
-          <div
-            data-testid="event-modal"
-            class="event-modal-overlay"
-            onClick={() => setActiveModalEvent(null)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape" || e.key === "Enter") {
-                setActiveModalEvent(null);
-              }
-            }}
-          >
-            <div
-              data-testid="event-modal-content"
-              class="event-modal-content"
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <div class="event-modal-top">
-                <div class="event-modal-hero">
-                  {ev().cover_image && (
-                    <img
-                      src={ev().cover_image}
-                      alt={ev().title}
-                      class="event-modal-cover"
-                    />
-                  )}
-                  <div>
-                    <div class="event-modal-title-row">
-                      <h3 class="event-modal-title">{ev().title}</h3>
-                      <button
-                        type="button"
-                        data-testid="copy-title-btn"
-                        class="btn-copy-title"
-                        title="Copy show name to clipboard"
-                        onClick={() => handleCopyTitle(ev().title)}
-                      >
-                        📋 {copySuccess() ? "Copied!" : "Copy"}
-                      </button>
-                    </div>
-                    <div class="event-modal-time">
-                      Release Time (Argentina): {ev().airing_at_art}
-                    </div>
-                    <div class="event-modal-badges">
-                      <span
-                        class={`modal-badge ${ev().has_manga ? "manga-true" : "manga-false"}`}
-                      >
-                        {ev().has_manga
-                          ? "Has Manga Adaptation"
-                          : "Anime Only / Original"}
-                      </span>
-                      {ev().is_tracked && (
-                        <span class="modal-badge tracked">✓ Tracked</span>
-                      )}
-                    </div>
-                    {/* Track / Untrack actions */}
-                    <div class="modal-action-row">
-                      <button
-                        type="button"
-                        data-testid={
-                          ev().is_tracked
-                            ? "modal-untrack-btn"
-                            : "modal-track-btn"
-                        }
-                        disabled={trackingInProgress()}
-                        onClick={() =>
-                          ev().is_tracked
-                            ? handleUntrackFromModal(ev())
-                            : handleTrackFromModal(ev())
-                        }
-                        class={ev().is_tracked ? "btn-untrack" : "btn-track"}
-                      >
-                        {ev().is_tracked ? "Untrack" : "Track Show"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveModalEvent(null)}
-                  class="btn-modal-close"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Description */}
-              <div class="event-modal-section">
-                <div class="event-modal-section-heading">Description</div>
-                <p class="event-modal-desc-text">
-                  {ev().description || "No description provided."}
-                </p>
-              </div>
-
-              {/* Genre Tags */}
-              <div class="event-modal-section">
-                <div class="event-modal-section-heading">Tags / Genres</div>
-                <div class="event-modal-tags-flex">
-                  <For each={ev().tags}>
-                    {(tag) => <span class="event-modal-tag-chip">{tag}</span>}
-                  </For>
-                </div>
-              </div>
-
-              {/* Episode Sources (JKAnime & Crunchyroll only) */}
-              <div class="event-modal-section">
-                <div class="event-modal-section-heading">
-                  Episode Sources & Links
-                </div>
-                <div class="episode-sources-col">
-                  <For each={getModalMainWatchChapters(activeModalEvent())}>
-                    {(ch) => (
-                      <a
-                        href={ch.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        data-testid={`chapter-link-${ch.number}`}
-                        class="episode-source-card"
-                      >
-                        <span>
-                          Episode {ch.number} - {ch.site}
-                        </span>
-                        <span>Watch →</span>
-                      </a>
-                    )}
-                  </For>
-                </div>
-              </div>
-
-              {/* Other Media Badges (Twitter, YouTube, Instagram, Disney+, Hulu, etc.) */}
-              <Show when={getModalOtherBadges(activeModalEvent()).length > 0}>
-                <div class="event-modal-section">
-                  <div class="event-modal-section-heading">
-                    Other Media & Links
-                  </div>
-                  <div class="other-sources-badges-row">
-                    <For each={getModalOtherBadges(activeModalEvent())}>
-                      {(badge) => (
-                        <a
-                          href={badge.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          data-testid={`source-badge-${badge.site.toLowerCase().replace(/[^a-z0-9]/g, "-")}`}
-                          class="site-badge-pill"
-                        >
-                          {badge.site} ↗
-                        </a>
-                      )}
-                    </For>
-                  </div>
-                </div>
-              </Show>
-
-              {/* Related Seasons / OVAs */}
-              <Show when={ev().relations.length > 0}>
-                <div>
-                  <div class="event-modal-section-heading">
-                    Related Seasons & Media
-                  </div>
-                  <div class="relations-col">
-                    <For each={ev().relations}>
-                      {(rel) => (
-                        <div class="relation-card">
-                          <span>{rel.title}</span>
-                          <span style={{ color: "var(--text-muted)" }}>
-                            {rel.relation_type} ({rel.format})
-                          </span>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </div>
-              </Show>
-            </div>
-          </div>
-        )}
-      </Show>
+      <ShowDetailModal
+        event={activeModalEvent()}
+        onClose={() => setActiveModalEvent(null)}
+        onTrackToggle={(ev) =>
+          ev.is_tracked ? handleUntrackFromModal(ev) : handleTrackFromModal(ev)
+        }
+        trackingInProgress={trackingInProgress()}
+      />
     </div>
   );
 };

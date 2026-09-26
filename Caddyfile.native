@@ -1,0 +1,15 @@
+{
+	auto_https off
+}
+
+http://anime.local:58888, http://localhost:58888, http://127.0.0.1:58888, http://{$BEACON_LAN_IP:lan.invalid}:58888 {
+	handle /api/* {
+		reverse_proxy 127.0.0.1:58889
+	}
+
+	handle {
+		root * frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -112,6 +112,14 @@ pub async fn search_nyaa(query: Option<&str>) -> Result<Vec<NyaaRelease>, String
 
 pub async fn search_catalog(query: &str, page: Option<u32>) -> Result<CatalogResponse, String> {
     let p = page.unwrap_or(1);
+    if query.trim().is_empty() {
+        return Ok(CatalogResponse {
+            items: Vec::new(),
+            page: p,
+            has_next_page: false,
+        });
+    }
+
     let anilist_url = std::env::var("ANILIST_API_URL")
         .unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
     let jikan_url = std::env::var("JIKAN_API_URL")
@@ -155,6 +163,9 @@ pub async fn search_catalog(query: &str, page: Option<u32>) -> Result<CatalogRes
         }
     });
 
+    if anilist_url.starts_with("https://graphql.anilist.co") {
+        crate::calendar::throttle_anilist().await;
+    }
     if let Ok(res) = client.post(&anilist_url).json(&payload).send().await {
         if let Ok(json) = res.json::<serde_json::Value>().await {
             if let Some(resp) = parse_anilist_catalog_json(&json, p) {
@@ -178,11 +189,116 @@ pub async fn search_catalog(query: &str, page: Option<u32>) -> Result<CatalogRes
         }
     }
 
+    // Tertiary fallback: Kitsu API
+    let kitsu_base = std::env::var("KITSU_API_URL")
+        .unwrap_or_else(|_| "https://kitsu.io/api/edge/anime".to_string());
+    let kitsu_url = format!(
+        "{}?filter[text]={}&page[limit]=20&page[offset]={}",
+        kitsu_base,
+        encoded_query,
+        (p - 1) * 20
+    );
+    if let Ok(res) = client.get(&kitsu_url).send().await {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if let Some(resp) = parse_kitsu_catalog_json(&json, p) {
+                return Ok(resp);
+            }
+        }
+    }
+
+    // Quaternary fallback: Search Nyaa directly
+    if let Ok(releases) = search_nyaa(Some(query)).await {
+        if !releases.is_empty() {
+            let mut unique_titles = std::collections::HashSet::new();
+            let mut items = Vec::new();
+            for rel in releases {
+                let clean = rel
+                    .title
+                    .trim_start_matches(|c| c == '[' || c != ']')
+                    .trim()
+                    .to_string();
+                if unique_titles.insert(clean.clone()) {
+                    items.push(CatalogItem {
+                        id: format!("nyaa-{}", items.len() + 1),
+                        title: clean,
+                        image_url: None,
+                        synopsis: Some(format!("Available on Nyaa ({:?})", rel.resolution)),
+                        tags: vec!["Anime".to_string()],
+                        is_torrenteable: true,
+                    });
+                }
+                if items.len() >= 20 {
+                    break;
+                }
+            }
+            if !items.is_empty() {
+                return Ok(CatalogResponse {
+                    items,
+                    page: p,
+                    has_next_page: false,
+                });
+            }
+        }
+    }
+
     Ok(CatalogResponse {
         items: Vec::new(),
         page: p,
         has_next_page: false,
     })
+}
+
+pub fn parse_kitsu_catalog_json(json: &serde_json::Value, page: u32) -> Option<CatalogResponse> {
+    let data = json.get("data")?.as_array()?;
+    let items: Vec<CatalogItem> = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id")?.as_str()?.to_string();
+            let attrs = item.get("attributes")?;
+            let title = attrs
+                .get("canonicalTitle")
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    attrs
+                        .get("titles")
+                        .and_then(|t| t.get("en").and_then(|v| v.as_str()))
+                })
+                .unwrap_or("Unknown")
+                .to_string();
+            let image_url = attrs
+                .get("posterImage")
+                .and_then(|p| {
+                    p.get("medium")
+                        .or_else(|| p.get("small"))
+                        .or_else(|| p.get("original"))
+                })
+                .and_then(|u| u.as_str())
+                .map(|s| s.to_string());
+            let synopsis = attrs
+                .get("synopsis")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            let tags = vec!["Anime".to_string()];
+            Some(CatalogItem {
+                id,
+                title,
+                image_url,
+                synopsis,
+                tags,
+                is_torrenteable: true,
+            })
+        })
+        .collect();
+
+    if items.is_empty() {
+        None
+    } else {
+        Some(CatalogResponse {
+            items,
+            page,
+            has_next_page: data.len() >= 20,
+        })
+    }
 }
 
 pub fn parse_anilist_catalog_json(json: &serde_json::Value, page: u32) -> Option<CatalogResponse> {
@@ -597,6 +713,34 @@ mod tests {
         assert!(parse_jikan_catalog_json(&serde_json::json!({}), 1).is_none());
     }
 
+    #[test]
+    fn test_parse_kitsu_catalog_json() {
+        let json = serde_json::json!({
+            "data": [
+                {
+                    "id": "6589",
+                    "attributes": {
+                        "canonicalTitle": "Sword Art Online",
+                        "posterImage": { "medium": "http://example.com/sao.jpg" },
+                        "synopsis": "Virtual reality MMO."
+                    }
+                }
+            ]
+        });
+
+        let res = parse_kitsu_catalog_json(&json, 1).unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].title, "Sword Art Online");
+        assert_eq!(res.items[0].id, "6589");
+        assert_eq!(
+            res.items[0].image_url,
+            Some("http://example.com/sao.jpg".to_string())
+        );
+
+        let empty = serde_json::json!({ "data": [] });
+        assert!(parse_kitsu_catalog_json(&empty, 1).is_none());
+    }
+
     #[tokio::test]
     #[serial]
     async fn test_search_catalog_with_mock_servers() {
@@ -685,6 +829,8 @@ mod tests {
             "JIKAN_API_URL",
             format!("{}/jikan?query=1", mock_jikan_empty.uri()),
         );
+        std::env::set_var("KITSU_API_URL", format!("{}/kitsu", mock_jikan_empty.uri()));
+        std::env::set_var("NYAA_SITE_URL", format!("{}/nyaa", mock_jikan_empty.uri()));
 
         let empty_catalog = search_catalog("Mock Search", None).await.unwrap();
         assert_eq!(empty_catalog.items.len(), 0);
@@ -715,19 +861,30 @@ mod tests {
             format!("{}/jikan", mock_jikan_invalid.uri()),
         );
 
+        let mock_kitsu = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_kitsu)
+            .await;
+
+        let mock_nyaa_empty = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"<?xml version="1.0"?><rss><channel></channel></rss>"#),
+            )
+            .mount(&mock_nyaa_empty)
+            .await;
+
+        std::env::set_var("KITSU_API_URL", mock_kitsu.uri());
+        std::env::set_var("NYAA_SITE_URL", mock_nyaa_empty.uri());
+
         let invalid_shape_catalog = search_catalog("Mock Search", Some(1)).await.unwrap();
         assert_eq!(invalid_shape_catalog.items.len(), 0);
 
         // AniList returns empty media list
-        let empty_media_json = serde_json::json!({
-            "data": {
-                "Page": {
-                    "pageInfo": { "hasNextPage": false },
-                    "media": []
-                }
-            }
-        });
-        assert!(parse_anilist_catalog_json(&empty_media_json, 1).is_none());
+        let empty_json = serde_json::json!({ "data": { "Page": { "media": [] } } });
+        assert!(parse_anilist_catalog_json(&empty_json, 1).is_none());
 
         // AniList and Jikan return HTTP 200 with non-JSON text body (res.json() returns Err)
         let mock_anilist_text = MockServer::start().await;
@@ -742,23 +899,29 @@ mod tests {
             .mount(&mock_jikan_text)
             .await;
 
-        std::env::set_var(
-            "ANILIST_API_URL",
-            format!("{}/graphql", mock_anilist_text.uri()),
-        );
-        std::env::set_var("JIKAN_API_URL", format!("{}/jikan", mock_jikan_text.uri()));
+        std::env::set_var("ANILIST_API_URL", mock_anilist_text.uri());
+        std::env::set_var("JIKAN_API_URL", mock_jikan_text.uri());
 
         let invalid_json_catalog = search_catalog("Mock Search", Some(1)).await.unwrap();
         assert_eq!(invalid_json_catalog.items.len(), 0);
 
-        // Network error for both AniList and Jikan
+        std::env::remove_var("ANILIST_API_URL");
+        std::env::remove_var("JIKAN_API_URL");
+        std::env::remove_var("KITSU_API_URL");
+        std::env::remove_var("NYAA_SITE_URL");
+
+        // Network error for all providers
         std::env::set_var("ANILIST_API_URL", "http://127.0.0.1:59999/graphql");
         std::env::set_var("JIKAN_API_URL", "http://127.0.0.1:59999/jikan");
+        std::env::set_var("KITSU_API_URL", "http://127.0.0.1:59999/kitsu");
+        std::env::set_var("NYAA_SITE_URL", "http://127.0.0.1:59999/nyaa");
         let net_err_catalog = search_catalog("Mock Search", Some(1)).await.unwrap();
         assert_eq!(net_err_catalog.items.len(), 0);
 
         std::env::remove_var("ANILIST_API_URL");
         std::env::remove_var("JIKAN_API_URL");
+        std::env::remove_var("KITSU_API_URL");
+        std::env::remove_var("NYAA_SITE_URL");
     }
 
     #[tokio::test]
@@ -1059,11 +1222,15 @@ mod tests {
 
         std::env::set_var("ANILIST_API_URL", mock_server.uri());
         std::env::set_var("JIKAN_API_URL", mock_server.uri());
+        std::env::set_var("KITSU_API_URL", mock_server.uri());
+        std::env::set_var("NYAA_SITE_URL", mock_server.uri());
 
         let res = search_catalog("query with spaces", None).await.unwrap();
         assert_eq!(res.items.len(), 0);
 
         std::env::remove_var("ANILIST_API_URL");
         std::env::remove_var("JIKAN_API_URL");
+        std::env::remove_var("KITSU_API_URL");
+        std::env::remove_var("NYAA_SITE_URL");
     }
 }

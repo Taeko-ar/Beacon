@@ -21,7 +21,11 @@ impl Db {
                  title TEXT NOT NULL,
                  subgroup TEXT,
                  resolution TEXT,
-                 last_downloaded INTEGER NOT NULL DEFAULT 0
+                 last_downloaded INTEGER NOT NULL DEFAULT 0,
+                 cover_image TEXT,
+                 synopsis TEXT,
+                 tags TEXT,
+                 year INTEGER
              );
              CREATE TABLE IF NOT EXISTS calendar_cache (
                  key TEXT PRIMARY KEY,
@@ -30,6 +34,12 @@ impl Db {
              );",
         )
         .unwrap();
+
+        // Safe column migrations if database already existed
+        let _ = conn.execute("ALTER TABLE tracked_shows ADD COLUMN cover_image TEXT", []);
+        let _ = conn.execute("ALTER TABLE tracked_shows ADD COLUMN synopsis TEXT", []);
+        let _ = conn.execute("ALTER TABLE tracked_shows ADD COLUMN tags TEXT", []);
+        let _ = conn.execute("ALTER TABLE tracked_shows ADD COLUMN year INTEGER", []);
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -44,7 +54,11 @@ impl Db {
                  title TEXT NOT NULL,
                  subgroup TEXT,
                  resolution TEXT,
-                 last_downloaded INTEGER NOT NULL DEFAULT 0
+                 last_downloaded INTEGER NOT NULL DEFAULT 0,
+                 cover_image TEXT,
+                 synopsis TEXT,
+                 tags TEXT,
+                 year INTEGER
              );
              CREATE TABLE IF NOT EXISTS calendar_cache (
                  key TEXT PRIMARY KEY,
@@ -60,21 +74,34 @@ impl Db {
     }
 
     pub fn list_tracked(&self) -> Vec<TrackedShow> {
+        self.get_all_tracked()
+    }
+
+    pub fn get_all_tracked(&self) -> Vec<TrackedShow> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = match conn
-            .prepare("SELECT id, title, subgroup, resolution, last_downloaded FROM tracked_shows")
-        {
+        let mut stmt = match conn.prepare(
+            "SELECT id, title, subgroup, resolution, last_downloaded, cover_image, synopsis, tags, year FROM tracked_shows",
+        ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
 
         stmt.query_map([], |row| {
+            let tags_str: Option<String> = row.get(7)?;
+            let tags = tags_str
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default();
+
             Ok(TrackedShow {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 preferred_subgroup: row.get(2)?,
                 preferred_resolution: row.get(3)?,
                 last_downloaded_episode: row.get::<_, u32>(4)?,
+                cover_image: row.get(5)?,
+                synopsis: row.get(6)?,
+                tags,
+                year: row.get(8)?,
             })
         })
         .unwrap()
@@ -84,20 +111,29 @@ impl Db {
 
     pub fn add_tracked(&self, show: &TrackedShow) -> bool {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tags_json = serde_json::to_string(&show.tags).unwrap_or_else(|_| "[]".to_string());
         let res = conn.execute(
-            "INSERT INTO tracked_shows (id, title, subgroup, resolution, last_downloaded)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO tracked_shows (id, title, subgroup, resolution, last_downloaded, cover_image, synopsis, tags, year)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                  title = excluded.title,
                  subgroup = excluded.subgroup,
                  resolution = excluded.resolution,
-                 last_downloaded = excluded.last_downloaded",
+                 last_downloaded = excluded.last_downloaded,
+                 cover_image = COALESCE(excluded.cover_image, tracked_shows.cover_image),
+                 synopsis = COALESCE(excluded.synopsis, tracked_shows.synopsis),
+                 tags = COALESCE(excluded.tags, tracked_shows.tags),
+                 year = COALESCE(excluded.year, tracked_shows.year)",
             params![
                 show.id,
                 show.title,
                 show.preferred_subgroup,
                 show.preferred_resolution,
                 show.last_downloaded_episode,
+                show.cover_image,
+                show.synopsis,
+                tags_json,
+                show.year,
             ],
         );
         res.is_ok()
@@ -146,6 +182,17 @@ impl Db {
         );
     }
 
+    /// (key, cached_at) of every cached calendar window, without loading event data.
+    pub fn calendar_cache_keys(&self) -> Vec<(String, i64)> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(mut stmt) = conn.prepare("SELECT key, cached_at FROM calendar_cache") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
     pub fn clear_calendar_cache(&self) {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute("DELETE FROM calendar_cache", []);
@@ -166,6 +213,7 @@ mod tests {
             preferred_subgroup: Some("SubsPlease".to_string()),
             preferred_resolution: Some("1080p".to_string()),
             last_downloaded_episode: 1,
+            ..Default::default()
         };
 
         assert!(db.add_tracked(&show));
@@ -188,6 +236,8 @@ mod tests {
             airing_at_art: "a".to_string(),
             release_date: "d".to_string(),
             episode: 1,
+            total_episodes: None,
+            mal_id: None,
             description: None,
             tags: vec![],
             cover_image: None,
@@ -217,6 +267,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         assert!(db.add_tracked(&show));
 
@@ -349,6 +400,7 @@ mod tests {
             preferred_subgroup: None,
             preferred_resolution: None,
             last_downloaded_episode: 0,
+            ..Default::default()
         };
         db.add_tracked(&show);
         db.remove_tracked("id");
