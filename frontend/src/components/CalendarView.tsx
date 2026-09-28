@@ -51,6 +51,22 @@ const AVAILABLE_SOURCES = [
   "HIDIVE",
 ];
 
+const releaseCount = (n: number) => `${n} release${n === 1 ? "" : "s"}`;
+
+/** Month grid cell summary: release count, plus tracked count when any. */
+const MonthDayCount: Component<{ events: CalendarEvent[] }> = (props) => (
+  <Show when={props.events.length > 0}>
+    <span class="month-day-count">
+      <span>{releaseCount(props.events.length)}</span>
+      <Show when={props.events.some((e) => e.is_tracked)}>
+        <span class="month-day-tracked">
+          {props.events.filter((e) => e.is_tracked).length} tracked
+        </span>
+      </Show>
+    </span>
+  </Show>
+);
+
 /* v8 ignore start */
 export const CalendarView: Component = () => {
   const [currentDate, setCurrentDate] = createSignal(new Date());
@@ -393,6 +409,29 @@ export const CalendarView: Component = () => {
     return filteredEvents().filter((ev) => ev.release_date === dateStr);
   };
 
+  // Month view: the panel follows the clicked day, defaulting to today when
+  // it falls in the shown month, else the 1st.
+  const monthSelectedDay = () => {
+    const d = selectedDay();
+    if (d && d <= daysInMonth()) return d;
+    const today = new Date();
+    return today.getFullYear() === year() && today.getMonth() === month()
+      ? today.getDate()
+      : 1;
+  };
+
+  const monthPanelEvents = () =>
+    [...getEventsForDay(monthSelectedDay())].sort(
+      (a, b) =>
+        Number(b.is_tracked) - Number(a.is_tracked) ||
+        a.airing_at - b.airing_at,
+    );
+
+  const monthPanelLabel = () => {
+    const d = new Date(year(), month(), monthSelectedDay());
+    return `${DAYS_OF_WEEK[d.getDay()]}, ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}${isToday(d.getDate()) ? " · Today" : ""}`;
+  };
+
   const headerTitle = () => {
     if (viewMode() === "day") {
       const d = currentDate();
@@ -417,41 +456,6 @@ export const CalendarView: Component = () => {
     filterName().trim() !== "" ||
     filterSeason() !== "all" ||
     selectedTags().length > 0;
-
-  /* v8 ignore start */
-  /* v8 ignore next */
-  const renderMonthEventChip = (ev: CalendarEvent) => (
-    <button
-      type="button"
-      class={`calendar-event-chip month-chip ${ev.is_tracked ? "tracked" : ""}`}
-      data-testid={`calendar-event-${ev.id}`}
-      onMouseEnter={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        setHoveredEvent({
-          event: ev,
-          x: rect.left,
-          y: rect.bottom + 5,
-        });
-      }}
-      onMouseLeave={() => setHoveredEvent(null)}
-      onClick={(e) => {
-        e.stopPropagation();
-        setActiveModalEvent(ev);
-      }}
-    >
-      <span class="calendar-event-chip-time">{ev.airing_at_art}</span>
-      {releaseBadge(ev) && (
-        <span
-          class={`release-badge ${releaseBadge(ev)?.toLowerCase()}`}
-          data-testid="release-badge"
-        >
-          {releaseBadge(ev)}
-        </span>
-      )}
-      <span class="calendar-event-chip-title">{ev.title}</span>
-    </button>
-  );
-  /* v8 ignore stop */
 
   return (
     <div
@@ -827,116 +831,153 @@ export const CalendarView: Component = () => {
                 </div>
               }
             >
-              <div
-                id="calendar-grid"
-                class="calendar-grid"
-                data-testid="calendar-grid"
-              >
-                <For each={DAYS_OF_WEEK}>
-                  {(day) => <div class="calendar-weekday-title">{day}</div>}
-                </For>
+              <div class="calendar-month-layout">
+                <div
+                  id="calendar-grid"
+                  class="calendar-grid month-grid"
+                  data-testid="calendar-grid"
+                >
+                  <For each={DAYS_OF_WEEK}>
+                    {(day) => <div class="calendar-weekday-title">{day}</div>}
+                  </For>
 
-                <For each={prevMonthDays()}>
-                  {(dayNumber) => {
-                    const dayDate = new Date(year(), month() - 1, dayNumber);
-                    const dayEvents = () => getEventsForDate(dayDate);
-
-                    return (
-                      <div
+                  <For each={prevMonthDays()}>
+                    {(dayNumber) => (
+                      <button
+                        type="button"
                         class="calendar-day-card prev-next-month-day"
                         data-testid={`calendar-prev-day-${dayNumber}`}
                         onClick={prevMonth}
-                        /* v8 ignore start */
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            prevMonth();
-                          }
-                        }}
-                        /* v8 ignore stop */
                       >
-                        <div class="calendar-day-num muted">{dayNumber}</div>
-
-                        <div class="calendar-events-col">
-                          <For each={dayEvents()}>
-                            {/* v8 ignore start */}
-                            {(ev) => renderMonthEventChip(ev)}
-                            {/* v8 ignore stop */}
-                          </For>
-                        </div>
-                      </div>
-                    );
-                  }}
-                </For>
-
-                <For each={dayList()}>
-                  {(dayNumber) => {
-                    const dayEvents = () => getEventsForDay(dayNumber);
-                    const isSelected = selectedDay() === dayNumber;
-                    const isDayToday = isToday(dayNumber);
-
-                    return (
-                      <div
-                        class={`calendar-day-card ${isSelected ? "selected" : ""} ${isDayToday ? "today" : ""}`}
-                        data-testid={`calendar-day-${dayNumber}`}
-                        onClick={() => setSelectedDay(dayNumber)}
-                        /* v8 ignore start */
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            setSelectedDay(dayNumber);
-                          }
-                        }}
-                        /* v8 ignore stop */
-                      >
-                        <div
-                          class={`calendar-day-num ${isDayToday || isSelected ? "active" : ""}`}
-                        >
-                          {dayNumber}
-                          {isDayToday && (
-                            <span class="calendar-today-badge">TODAY</span>
+                        <span class="calendar-day-num muted">{dayNumber}</span>
+                        <MonthDayCount
+                          events={getEventsForDate(
+                            new Date(year(), month() - 1, dayNumber),
                           )}
-                        </div>
+                        />
+                      </button>
+                    )}
+                  </For>
 
-                        <div class="calendar-events-col">
-                          <For each={dayEvents()}>
-                            {(ev) => renderMonthEventChip(ev)}
-                          </For>
-                        </div>
-                      </div>
-                    );
-                  }}
-                </For>
+                  <For each={dayList()}>
+                    {(dayNumber) => {
+                      const isSelected = () => monthSelectedDay() === dayNumber;
+                      const isDayToday = isToday(dayNumber);
+                      return (
+                        <button
+                          type="button"
+                          class={`calendar-day-card ${isSelected() ? "selected" : ""} ${isDayToday ? "today" : ""}`}
+                          data-testid={`calendar-day-${dayNumber}`}
+                          aria-pressed={isSelected()}
+                          onClick={() => setSelectedDay(dayNumber)}
+                        >
+                          <span
+                            class={`calendar-day-num ${isDayToday || isSelected() ? "active" : ""}`}
+                          >
+                            {dayNumber}
+                            {isDayToday && (
+                              <span class="calendar-today-badge">TODAY</span>
+                            )}
+                          </span>
+                          <MonthDayCount events={getEventsForDay(dayNumber)} />
+                        </button>
+                      );
+                    }}
+                  </For>
 
-                <For each={nextMonthDays()}>
-                  {(dayNumber) => {
-                    const dayDate = new Date(year(), month() + 1, dayNumber);
-                    const dayEvents = () => getEventsForDate(dayDate);
-
-                    return (
-                      <div
+                  <For each={nextMonthDays()}>
+                    {(dayNumber) => (
+                      <button
+                        type="button"
                         class="calendar-day-card prev-next-month-day"
                         data-testid={`calendar-next-day-${dayNumber}`}
                         onClick={nextMonth}
-                        /* v8 ignore start */
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            nextMonth();
-                          }
-                        }}
-                        /* v8 ignore stop */
                       >
-                        <div class="calendar-day-num muted">{dayNumber}</div>
+                        <span class="calendar-day-num muted">{dayNumber}</span>
+                        <MonthDayCount
+                          events={getEventsForDate(
+                            new Date(year(), month() + 1, dayNumber),
+                          )}
+                        />
+                      </button>
+                    )}
+                  </For>
+                </div>
 
-                        <div class="calendar-events-col">
-                          <For each={dayEvents()}>
-                            {/* v8 ignore start */}
-                            {(ev) => renderMonthEventChip(ev)}
-                            {/* v8 ignore stop */}
-                          </For>
-                        </div>
-                      </div>
-                    );
-                  }}
-                </For>
+                {/* Selected day panel: fixed header, list scrolls on its own */}
+                <section
+                  class="month-day-panel"
+                  data-testid="month-day-panel"
+                  aria-label="Releases for the selected day"
+                >
+                  <div class="month-day-panel-header">
+                    <span class="month-day-panel-title">
+                      {monthPanelLabel()}
+                    </span>
+                    <span class="month-day-panel-count">
+                      {releaseCount(monthPanelEvents().length)}
+                    </span>
+                  </div>
+                  <div class="month-day-panel-scroll">
+                    <div class="month-day-panel-list">
+                      <For
+                        each={monthPanelEvents()}
+                        fallback={
+                          <div class="search-results-empty">
+                            No releases scheduled for this date
+                          </div>
+                        }
+                      >
+                        {(ev) => (
+                          <button
+                            type="button"
+                            class={`month-panel-row ${ev.is_tracked ? "tracked" : ""}`}
+                            data-testid={`calendar-event-${ev.id}`}
+                            onClick={() => setActiveModalEvent(ev)}
+                          >
+                            <Show
+                              when={ev.cover_image}
+                              fallback={
+                                <span class="month-panel-cover placeholder" />
+                              }
+                            >
+                              <img
+                                src={ev.cover_image}
+                                alt=""
+                                loading="lazy"
+                                class="month-panel-cover"
+                              />
+                            </Show>
+                            <span class="month-panel-info">
+                              <span class="month-panel-title">{ev.title}</span>
+                              <span class="month-panel-meta">
+                                <span class="month-panel-time">
+                                  {ev.airing_at_art}
+                                </span>
+                                <Show when={ev.episode > 0}>
+                                  <span>Ep {ev.episode}</span>
+                                </Show>
+                                {releaseBadge(ev) && (
+                                  <span
+                                    class={`release-badge ${releaseBadge(ev)?.toLowerCase()}`}
+                                    data-testid="release-badge"
+                                  >
+                                    {releaseBadge(ev)}
+                                  </span>
+                                )}
+                                <Show when={ev.is_tracked}>
+                                  <span class="month-panel-tracked">
+                                    Tracked
+                                  </span>
+                                </Show>
+                              </span>
+                            </span>
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </section>
               </div>
             </Show>
           </div>

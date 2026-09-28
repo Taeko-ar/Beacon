@@ -843,3 +843,159 @@
     grid-row: span 3;
   }
 }
+
+/* ── Month view: count grid + selected-day panel ──────────────── */
+.calendar-month-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+button.calendar-day-card {
+  font: inherit;
+  text-align: left;
+  justify-content: space-between;
+  min-height: 84px;
+}
+
+.month-day-count {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.month-day-tracked {
+  color: var(--accent-hi);
+}
+
+/* The panel stretches to the grid's height; its list scrolls inside that
+   box (absolute inset) so a busy day never makes the page taller. */
+.month-day-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  min-height: 0;
+}
+
+.month-day-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.month-day-panel-title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.month-day-panel-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.month-day-panel-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 240px;
+}
+
+.month-day-panel-list {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-right: 0.25rem;
+}
+
+.month-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.4rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.month-panel-row:hover {
+  background: var(--surface2);
+}
+
+.month-panel-row.tracked {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--accent);
+}
+
+.month-panel-cover {
+  width: 40px;
+  height: 56px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.month-panel-cover.placeholder {
+  background: var(--surface2);
+}
+
+.month-panel-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.month-panel-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.month-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.month-panel-meta .release-badge {
+  margin-right: 0;
+}
+
+.month-panel-time {
+  font-weight: 700;
+  color: var(--accent-hi);
+}
+
+.month-panel-tracked {
+  color: var(--accent-hi);
+}
+
+@media (max-width: 900px) {
+  .calendar-month-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .month-day-panel-scroll {
+    min-height: 60vh;
+  }
+}

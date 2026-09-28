@@ -51,6 +51,69 @@ describe("CalendarView Component", () => {
     ]);
   });
 
+  it("month view panel lists the selected day's releases, tracked first", async () => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const day = now.getDate() === 1 ? 2 : 1;
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(day)}`;
+    const base = {
+      release_date: dateStr,
+      episode: 3,
+      tags: [],
+      format: "TV",
+      sources: [],
+      has_manga: false,
+      chapters: [],
+      relations: [],
+    };
+    vi.spyOn(calendarApi, "fetchCalendarEvents").mockResolvedValue([
+      {
+        ...base,
+        id: 801,
+        media_id: 801,
+        title: "Early Untracked",
+        airing_at: 100,
+        airing_at_art: "01:00",
+        is_tracked: false,
+      },
+      {
+        ...base,
+        id: 802,
+        media_id: 802,
+        title: "Late Tracked",
+        airing_at: 200,
+        airing_at_art: "20:00",
+        is_tracked: true,
+      },
+    ]);
+
+    const { getByTestId } = render(() => <CalendarView />);
+    fireEvent.click(getByTestId("calendar-view-mode-month"));
+    await waitFor(() => {
+      expect(getByTestId(`calendar-day-${day}`).textContent).toContain(
+        "2 releases",
+      );
+    });
+
+    fireEvent.click(getByTestId(`calendar-day-${day}`));
+    await waitFor(() => {
+      expect(getByTestId("month-day-panel").textContent).toContain(
+        "2 releases",
+      );
+    });
+    const rows =
+      getByTestId("month-day-panel").querySelectorAll(".month-panel-row");
+    expect(Array.from(rows).map((r) => r.getAttribute("data-testid"))).toEqual([
+      "calendar-event-802",
+      "calendar-event-801",
+    ]);
+
+    fireEvent.click(getByTestId("calendar-event-802"));
+    await waitFor(() => {
+      expect(getByTestId("event-modal")).toBeTruthy();
+    });
+  });
+
   it("renders calendar with current week header and grid", async () => {
     const { getByTestId } = render(() => <CalendarView />);
     expect(getByTestId("calendar-view")).toBeTruthy();
@@ -905,7 +968,7 @@ describe("CalendarView Component", () => {
     });
 
     // Verify activeModalEvent was updated in state
-    expect(getByText("Tracked")).toBeTruthy();
+    expect(getByTestId("event-modal").textContent).toContain("Tracked");
 
     fireEvent.click(getByTestId("modal-untrack-btn"));
     await waitFor(() => {
@@ -1013,29 +1076,13 @@ describe("CalendarView Component", () => {
 
     fireEvent.click(getByTestId("modal-close-btn"));
 
-    await waitFor(() => {
-      expect(getByTestId("calendar-event-991")).toBeTruthy();
-    });
-    const prevChip = getByTestId("calendar-event-991");
-    fireEvent.mouseEnter(prevChip);
-    fireEvent.mouseLeave(prevChip);
-    fireEvent.click(prevChip);
-    await waitFor(() => {
-      expect(getByTestId("event-modal")).toBeTruthy();
-    });
-    fireEvent.click(getByTestId("modal-close-btn"));
-
-    await waitFor(() => {
-      expect(getByTestId("calendar-event-992")).toBeTruthy();
-    });
-    const nextChip = getByTestId("calendar-event-992");
-    fireEvent.mouseEnter(nextChip);
-    fireEvent.mouseLeave(nextChip);
-    fireEvent.click(nextChip);
-    await waitFor(() => {
-      expect(getByTestId("event-modal")).toBeTruthy();
-    });
-    fireEvent.click(getByTestId("modal-close-btn"));
+    // Neighbouring-month cells show counts only; their shows open from
+    // that month's own panel.
+    const edgeCounts = Array.from(
+      container.querySelectorAll(".prev-next-month-day .month-day-count"),
+    ).map((el) => el.textContent);
+    expect(edgeCounts).toContain("1 release1 tracked");
+    expect(queryByTestId("calendar-event-991")).toBeNull();
 
     const prevDayElem = queryByTestId("calendar-prev-day-28");
     if (prevDayElem) {
