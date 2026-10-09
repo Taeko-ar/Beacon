@@ -313,6 +313,15 @@ pub fn get_display_bounds(year: i32, month: u32) -> (i64, i64) {
     (ts(year, month) - 7 * 86400, ts(ny, nm) + 7 * 86400)
 }
 
+/// Cache windows span +/-90 days; only send what the month view can show.
+pub fn filter_display(events: Vec<CalendarEvent>, year: i32, month: u32) -> Vec<CalendarEvent> {
+    let (start, end) = get_display_bounds(year, month);
+    events
+        .into_iter()
+        .filter(|e| e.airing_at >= start && e.airing_at < end)
+        .collect()
+}
+
 pub fn format_argentina_time(timestamp: i64) -> (String, String) {
     use chrono::{FixedOffset, TimeZone};
     let art_offset = FixedOffset::west_opt(3 * 3600).unwrap();
@@ -832,6 +841,37 @@ mod tests {
 
         let (s, e) = get_display_bounds(2026, 12);
         assert_eq!(e - s, (31 + 14) * 86400);
+    }
+
+    #[test]
+    fn test_filter_display() {
+        let (s, e) = get_display_bounds(2026, 10);
+        let ev = |airing_at: i64| CalendarEvent {
+            id: airing_at as u64,
+            media_id: 1,
+            title: "t".to_string(),
+            title_romaji: None,
+            title_english: None,
+            airing_at,
+            airing_at_art: String::new(),
+            release_date: String::new(),
+            episode: 1,
+            total_episodes: None,
+            mal_id: None,
+            description: None,
+            tags: vec![],
+            cover_image: None,
+            banner_image: None,
+            format: String::new(),
+            is_tracked: false,
+            sources: vec![],
+            has_manga: false,
+            chapters: vec![],
+            relations: vec![],
+        };
+        let kept = filter_display(vec![ev(s - 1), ev(s), ev(e - 1), ev(e)], 2026, 10);
+        let ids: Vec<i64> = kept.iter().map(|e| e.airing_at).collect();
+        assert_eq!(ids, vec![s, e - 1]);
     }
 
     #[test]

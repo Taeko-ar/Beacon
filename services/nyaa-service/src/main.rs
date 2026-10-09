@@ -115,16 +115,37 @@ pub async fn calendar_handler(
     let tracked_titles = tracker.list().into_iter().map(|t| t.title).collect();
     service.set_tracked_titles(tracked_titles);
 
-    match service.get_events(year, month).await {
+    let res = match service.get_events(year, month).await {
         Ok(events) => Json(serde_json::json!({
             "ok": true,
-            "data": events
+            "data": calendar::filter_display(events, year, month)
         })),
         Err(e) => Json(serde_json::json!({
             "ok": false,
             "error": "CALENDAR_FETCH_ERROR",
             "message": e
         })),
+    };
+    // The response body is written after we return; give it a moment, then
+    // hand the freed multi-MB cache parse back to the OS.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        release_memory();
+    });
+    res
+}
+
+/// glibc keeps freed heap pages; the service idles almost all day, so return them.
+pub fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: malloc_trim has no preconditions.
+        unsafe {
+            malloc_trim(0);
+        }
     }
 }
 
@@ -181,18 +202,17 @@ pub fn app(tracker: tracker::TrackerStore) -> Router {
 pub async fn poll_once(tracker: &tracker::TrackerStore) {
     let releases = nyaa::search_nyaa(None).await.unwrap_or_default();
     let tracked_shows = tracker.list();
-    for show in tracked_shows {
+    for mut show in tracked_shows {
         for release in &releases {
             if tracker.is_match(release, &show) {
-                println!(
-                    "Match: {} -> magnet link: {}",
-                    show.title, release.magnet_link
-                );
                 let ep = release.episode.unwrap_or(0);
                 if ep > show.last_downloaded_episode {
-                    let mut updated_show = show.clone();
-                    updated_show.last_downloaded_episode = ep;
-                    tracker.add(updated_show);
+                    println!(
+                        "Match: {} ep {} -> magnet link: {}",
+                        show.title, ep, release.magnet_link
+                    );
+                    show.last_downloaded_episode = ep;
+                    tracker.add(show.clone());
                 }
             }
         }
@@ -251,6 +271,7 @@ pub async fn warm_calendar_cache(tracker: tracker::TrackerStore) {
             eprintln!("[Beacon] calendar cache warm {year}-{month} failed: {e}");
         }
     }
+    release_memory();
 }
 
 pub async fn main_entry(shutdown: tokio::sync::oneshot::Receiver<()>) {
@@ -263,8 +284,9 @@ pub async fn main_entry(shutdown: tokio::sync::oneshot::Receiver<()>) {
     run_server(addr, tracker, shutdown).await;
 }
 
+// Single thread: used 1-2x a day, RAM matters more than throughput.
 #[cfg(not(test))]
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {

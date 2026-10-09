@@ -13,8 +13,10 @@ pub struct NyaaRelease {
 
 static SUBGROUP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(.*?)\]").unwrap());
 static RES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(1080p|720p|2160p|4k)").unwrap());
-static EP_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:-|\bE|ep|\b)\s*(\d{2,4})\b").unwrap());
+// ASCII \b: Unicode \b treats CJK as word chars, so "第01话" would never match.
+static EP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:-|(?-u:\b)E|ep|(?-u:\b))\s*(\d{2,4})(?-u:\b)").unwrap()
+});
 
 pub fn parse_nyaa_title(raw_title: &str, magnet: &str) -> NyaaRelease {
     let subgroup = SUBGROUP_RE
@@ -484,6 +486,13 @@ mod tests {
         assert_eq!(release.subgroup, Some("SubsPlease".to_string()));
         assert_eq!(release.resolution, Some("1080p".to_string()));
         assert_eq!(release.episode, Some(5));
+    }
+
+    #[test]
+    fn test_parse_nyaa_title_cjk_episode() {
+        let title = "[Doomdos] - The Iceblade Sorcerer Shall Rule the World II - 第01话 - [1080p BILIBILI COM WEB-DL]";
+        let release = parse_nyaa_title(title, "m");
+        assert_eq!(release.episode, Some(1));
     }
 
     #[test]
