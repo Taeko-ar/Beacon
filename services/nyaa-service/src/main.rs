@@ -98,6 +98,48 @@ pub async fn remove_tracked_handler(
 }
 
 #[derive(Deserialize, Debug, Clone)]
+pub struct WatchedBody {
+    pub media_id: u64,
+    pub episode: u32,
+}
+
+pub async fn list_watched_handler(
+    State(tracker): State<tracker::TrackerStore>,
+) -> Json<serde_json::Value> {
+    let data: Vec<_> = tracker
+        .db()
+        .list_watched()
+        .into_iter()
+        .map(|(media_id, episode)| serde_json::json!({ "media_id": media_id, "episode": episode }))
+        .collect();
+    Json(serde_json::json!({ "ok": true, "data": data }))
+}
+
+pub async fn add_watched_handler(
+    State(tracker): State<tracker::TrackerStore>,
+    Json(b): Json<WatchedBody>,
+) -> Json<serde_json::Value> {
+    watched_response(tracker.db().set_watched(b.media_id, b.episode, true))
+}
+
+pub async fn remove_watched_handler(
+    State(tracker): State<tracker::TrackerStore>,
+    Json(b): Json<WatchedBody>,
+) -> Json<serde_json::Value> {
+    watched_response(tracker.db().set_watched(b.media_id, b.episode, false))
+}
+
+fn watched_response(ok: bool) -> Json<serde_json::Value> {
+    if ok {
+        Json(serde_json::json!({ "ok": true, "data": {} }))
+    } else {
+        Json(
+            serde_json::json!({ "ok": false, "error": "DB_ERROR", "message": "failed to update watched episode" }),
+        )
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct CalendarParams {
     pub year: Option<i32>,
     pub month: Option<u32>,
@@ -193,6 +235,12 @@ pub fn app(tracker: tracker::TrackerStore) -> Router {
             get(list_tracked_handler).post(add_tracked_handler),
         )
         .route("/api/track/:id", delete(remove_tracked_handler))
+        .route(
+            "/api/watched",
+            get(list_watched_handler)
+                .post(add_watched_handler)
+                .delete(remove_watched_handler),
+        )
         .layer(cors)
         .with_state(tracker)
 }

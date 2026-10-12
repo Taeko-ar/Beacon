@@ -284,6 +284,11 @@
   border-color: var(--accent);
 }
 
+.calendar-event-chip.watched {
+  background: rgba(74, 222, 128, 0.25);
+  border-color: #86efac;
+}
+
 .calendar-event-chip-time {
   font-weight: 700;
   color: var(--accent-hi);
@@ -942,6 +947,11 @@ button.calendar-day-card {
   border-color: var(--accent);
 }
 
+.month-panel-row.watched {
+  background: rgba(74, 222, 128, 0.18);
+  border-color: #86efac;
+}
+
 .month-panel-cover {
   width: 40px;
   height: 56px;
@@ -998,4 +1008,26 @@ button.calendar-day-card {
   .month-day-panel-scroll {
     min-height: 60vh;
   }
+}
+
+/* ── Watched episodes ─────────────────────────────────────────── */
+.show-modal-watched {
+  width: 100%;
+  padding: 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted, inherit);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.show-modal-watched.is-watched {
+  border-color: #86efac;
+  color: #86efac;
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.month-panel-watched {
+  color: #86efac;
 }

@@ -14,9 +14,8 @@ pub struct NyaaRelease {
 static SUBGROUP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(.*?)\]").unwrap());
 static RES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(1080p|720p|2160p|4k)").unwrap());
 // ASCII \b: Unicode \b treats CJK as word chars, so "第01话" would never match.
-static EP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:-|(?-u:\b)E|ep|(?-u:\b))\s*(\d{2,4})(?-u:\b)").unwrap()
-});
+static EP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:-|(?-u:\b)E|ep|(?-u:\b))\s*(\d{2,4})(?-u:\b)").unwrap());
 
 pub fn parse_nyaa_title(raw_title: &str, magnet: &str) -> NyaaRelease {
     let subgroup = SUBGROUP_RE

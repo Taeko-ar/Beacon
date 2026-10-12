@@ -1,4 +1,4 @@
-import { type Component, createSignal } from "solid-js";
+import { type Component, createSignal, onMount } from "solid-js";
 import { CalendarView } from "./components/CalendarView";
 import { ConfigModal } from "./components/ConfigModal";
 import { LibraryView } from "./components/LibraryView";
@@ -7,6 +7,7 @@ import {
   type ToastMessage,
   globalToasts,
 } from "./components/Toast";
+import { loadWatched } from "./services/watched";
 
 const App: Component = () => {
   const [activeTab, setActiveTab] = createSignal<"calendar" | "library">(
@@ -14,6 +15,9 @@ const App: Component = () => {
   );
   const [toasts] = createSignal<ToastMessage[]>([]);
   const [showConfig, setShowConfig] = createSignal(false);
+  onMount(() => {
+    loadWatched().catch(() => {});
+  });
   // Merge local app toasts with global bus toasts
   const allToasts = () => [...toasts(), ...globalToasts()];
 

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "deploy": "cd ../services/nyaa-service && cargo build --release && cd ../../frontend && vite build && systemctl --user restart beacon-nyaa.service",
     "test:frontend": "vitest run --coverage || (echo '[FAIL] Backend coverage below threshold' && exit 1)",
     "test:backend": "cd .. && cd services/nyaa-service && cargo fmt --check && cargo clippy -- -D warnings && cargo llvm-cov -q --fail-under-lines 90 --fail-under-functions 90 --fail-under-regions 90 || (echo '[FAIL] Backend coverage below threshold' && exit 1)",
     "test:e2e": "playwright test --reporter=line || (echo '[FAIL] Playwright tests failed' && exit 1)",

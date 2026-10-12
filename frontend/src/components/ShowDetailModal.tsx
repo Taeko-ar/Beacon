@@ -7,6 +7,7 @@ import {
   releaseBadge,
 } from "../services/api/calendar";
 import { copyText, descriptionToHtml } from "../services/format";
+import { isWatched, setEpisodeWatched } from "../services/watched";
 import { showToast } from "./Toast";
 
 const isMainWatchSource = (site: string) => {
@@ -217,6 +218,26 @@ export const ShowDetailModal: Component<ShowDetailModalProps> = (props) => {
                     class={`show-modal-track ${ev().is_tracked ? "btn-untrack" : "btn-track"}`}
                   >
                     {ev().is_tracked ? "Untrack" : "Track Show"}
+                  </button>
+                </Show>
+                <Show when={ev().episode > 0}>
+                  <button
+                    type="button"
+                    data-testid="modal-watched-btn"
+                    class={`show-modal-watched ${isWatched(ev().media_id, ev().episode) ? "is-watched" : ""}`}
+                    onClick={async () => {
+                      const next = !isWatched(ev().media_id, ev().episode);
+                      const ok = await setEpisodeWatched(
+                        ev().media_id,
+                        ev().episode,
+                        next,
+                      );
+                      if (!ok) showToast("Failed to update watched", "error");
+                    }}
+                  >
+                    {isWatched(ev().media_id, ev().episode)
+                      ? `Ep ${ev().episode} watched ✓`
+                      : `Mark Ep ${ev().episode} watched`}
                   </button>
                 </Show>
                 <dl class="show-modal-meta">

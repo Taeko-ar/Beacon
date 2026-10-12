@@ -23,6 +23,7 @@ import {
 } from "../services/api/tracking";
 import { descriptionToHtml } from "../services/format";
 import "./CalendarView.css";
+import { isWatched } from "../services/watched";
 import { ShowDetailModal } from "./ShowDetailModal";
 import { showToast } from "./Toast";
 
@@ -719,7 +720,7 @@ export const CalendarView: Component = () => {
                 {(ev) => (
                   <button
                     type="button"
-                    class={`calendar-event-chip today-event-card ${ev.is_tracked ? "tracked" : ""}`}
+                    class={`calendar-event-chip today-event-card ${ev.is_tracked ? "tracked" : ""} ${isWatched(ev.media_id, ev.episode) ? "watched" : ""}`}
                     data-testid={`calendar-event-${ev.id}`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -787,7 +788,7 @@ export const CalendarView: Component = () => {
                               {(ev) => (
                                 <button
                                   type="button"
-                                  class={`calendar-event-chip ${ev.is_tracked ? "tracked" : ""}`}
+                                  class={`calendar-event-chip ${ev.is_tracked ? "tracked" : ""} ${isWatched(ev.media_id, ev.episode) ? "watched" : ""}`}
                                   data-testid={`calendar-event-${ev.id}`}
                                   onMouseEnter={(e) => {
                                     const rect =
@@ -931,7 +932,7 @@ export const CalendarView: Component = () => {
                         {(ev) => (
                           <button
                             type="button"
-                            class={`month-panel-row ${ev.is_tracked ? "tracked" : ""}`}
+                            class={`month-panel-row ${ev.is_tracked ? "tracked" : ""} ${isWatched(ev.media_id, ev.episode) ? "watched" : ""}`}
                             data-testid={`calendar-event-${ev.id}`}
                             onClick={() => setActiveModalEvent(ev)}
                           >
@@ -963,6 +964,14 @@ export const CalendarView: Component = () => {
                                     data-testid="release-badge"
                                   >
                                     {releaseBadge(ev)}
+                                  </span>
+                                )}
+                                {isWatched(ev.media_id, ev.episode) && (
+                                  <span
+                                    class="month-panel-watched"
+                                    data-testid="watched-tag"
+                                  >
+                                    Watched
                                   </span>
                                 )}
                                 <Show when={ev.is_tracked}>

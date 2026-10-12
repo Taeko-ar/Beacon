@@ -27,6 +27,11 @@ impl Db {
                  tags TEXT,
                  year INTEGER
              );
+             CREATE TABLE IF NOT EXISTS watched_episodes (
+                 media_id INTEGER NOT NULL,
+                 episode INTEGER NOT NULL,
+                 PRIMARY KEY (media_id, episode)
+             );
              CREATE TABLE IF NOT EXISTS calendar_cache (
                  key TEXT PRIMARY KEY,
                  cached_at INTEGER NOT NULL,
@@ -60,6 +65,11 @@ impl Db {
                  tags TEXT,
                  year INTEGER
              );
+             CREATE TABLE IF NOT EXISTS watched_episodes (
+                 media_id INTEGER NOT NULL,
+                 episode INTEGER NOT NULL,
+                 PRIMARY KEY (media_id, episode)
+             );
              CREATE TABLE IF NOT EXISTS calendar_cache (
                  key TEXT PRIMARY KEY,
                  cached_at INTEGER NOT NULL,
@@ -71,6 +81,27 @@ impl Db {
         Self {
             conn: Arc::new(Mutex::new(conn)),
         }
+    }
+
+    pub fn list_watched(&self) -> Vec<(u64, u32)> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = match conn.prepare("SELECT media_id, episode FROM watched_episodes") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |r| Ok((r.get::<_, u64>(0)?, r.get::<_, u32>(1)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn set_watched(&self, media_id: u64, episode: u32, watched: bool) -> bool {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let sql = if watched {
+            "INSERT OR IGNORE INTO watched_episodes (media_id, episode) VALUES (?1, ?2)"
+        } else {
+            "DELETE FROM watched_episodes WHERE media_id = ?1 AND episode = ?2"
+        };
+        conn.execute(sql, params![media_id, episode]).is_ok()
     }
 
     pub fn list_tracked(&self) -> Vec<TrackedShow> {
@@ -412,6 +443,17 @@ mod tests {
         {
             let _conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    #[test]
+    fn test_watched_episodes() {
+        let db = Db::in_memory();
+        assert!(db.list_watched().is_empty());
+        assert!(db.set_watched(7, 3, true));
+        assert!(db.set_watched(7, 3, true));
+        assert_eq!(db.list_watched(), vec![(7, 3)]);
+        assert!(db.set_watched(7, 3, false));
+        assert!(db.list_watched().is_empty());
     }
 
     #[test]
